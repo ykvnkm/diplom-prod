@@ -2,7 +2,10 @@
 set -euo pipefail
 
 mkdir -p /app/models /app/runtime/unified/uploads /app/runtime/unified/reports
-mkdir -p /app/public/images /app/public/annotations
+
+FRAMES_DIR="${NSU_LOCAL_FRAMES_DIR:-/app/public/images}"
+COCO_PATH="${NSU_LOCAL_FRAMES_COCO:-/app/public/annotations/val_from_labels.json}"
+mkdir -p "$FRAMES_DIR" "$(dirname "$COCO_PATH")"
 
 fetch_if_missing() {
   local target="$1"

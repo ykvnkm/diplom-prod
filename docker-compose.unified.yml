@@ -21,7 +21,7 @@ services:
     volumes:
       - rescueai_models:/app/models
       - rescueai_runtime:/app/runtime
-      - ./public:/app/public:ro
+      - ./public:/app/public
     restart: unless-stopped
 
 volumes:
