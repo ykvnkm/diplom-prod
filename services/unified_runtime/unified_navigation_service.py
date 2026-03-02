@@ -89,7 +89,6 @@ MARKER_RESIZE_H = 540
 CONFIG_PATH = Path("configs/unified_runtime.yaml")
 UI_TEMPLATE_PATH = Path("services/unified_runtime/templates/unified_navigation_ui.html")
 NSU_LOCAL_FRAMES_DIR = Path(os.getenv("NSU_LOCAL_FRAMES_DIR", "public/images"))
-NSU_LOCAL_FRAMES_COCO = Path(os.getenv("NSU_LOCAL_FRAMES_COCO", "public/annotations/val_from_labels.json"))
 NSU_LOCAL_VIDEO_PRESET = "nsu_video_yolov8n_fast"
 
 ALLOWED_NSU_MODELS = {
@@ -1685,6 +1684,21 @@ def _autodetect_annotations_dir(frames_root: Path) -> str:
     return ""
 
 
+def _autodetect_coco_annotations_file(frames_root: Path) -> str:
+    candidates = [
+        frames_root / "annotations",
+        frames_root.parent / "annotations",
+        frames_root.parent.parent / "annotations",
+    ]
+    for ann_dir in candidates:
+        if not ann_dir.exists() or not ann_dir.is_dir():
+            continue
+        json_files = sorted([p for p in ann_dir.rglob("*.json") if p.is_file()])
+        if json_files:
+            return str(json_files[0])
+    return ""
+
+
 def _ensure_rtsp_url(url: str):
     val = (url or "").strip()
     if not val:
@@ -2687,8 +2701,19 @@ async def start_source(
         if run_mode == "nsu" and nsu_channel == "local":
             if not source_value.strip():
                 source_value = str(NSU_LOCAL_FRAMES_DIR)
-            if not annotations_coco_value.strip():
-                annotations_coco_value = str(NSU_LOCAL_FRAMES_COCO)
+        if not annotations_coco_value.strip() and annotations_file is None and source_value.strip():
+            auto_coco = _autodetect_coco_annotations_file(Path(source_value))
+            if auto_coco:
+                annotations_coco_value = auto_coco
+            elif run_mode == "nsu" and nsu_channel == "local":
+                expected_dir = Path(source_value).parent / "annotations"
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "COCO аннотации не найдены автоматически. "
+                        f"Ожидалась папка с JSON: {expected_dir}"
+                    ),
+                )
     elif source_kind in {"video", "rtsp"} and run_mode == "nsu" and nsu_channel == "local" and model != "nanodet":
         debug_preset = forced_video_preset
         annotations_value = ""
@@ -2785,6 +2810,7 @@ async def start_source(
         "mode": source_kind,
         "applied_config": debug_preset_name if source_kind in {"frames", "video", "rtsp"} else "",
         "stream_mission_id": stream_mission_id.strip(),
+        "coco_gt": annotations_coco_value if source_kind == "frames" else "",
     }
 
 

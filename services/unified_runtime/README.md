@@ -62,8 +62,10 @@ python -m uvicorn services.unified_runtime.unified_navigation_service:app --host
 - Для режима `НСУ -> local -> frames` выбор модели и debug-настроек отключен в UI.
 - Этот режим всегда запускается с конфигом:
   - `configs/nsu_frames_yolov8n_alert_contract.yaml`
-- Сравнение с GT и метрики для `frames` считаются автоматически по COCO из этого же конфига:
-  - `dataset.coco_gt` (сейчас: `public/annotations/val_from_labels.json`)
+- Сравнение с GT и метрики для `frames`:
+  - если COCO-файл загружен вручную в UI, используется он;
+  - иначе сервис автоматически ищет первый `*.json` в папке `annotations` рядом с папкой кадров (например `.../images` -> `.../annotations`);
+  - авто-логика одинаково работает для `НСУ local + frames` и `НСУ stream + frames`.
 - Метрики считаются по контракту alert/episode:
   - `Recall_event = episodes_found / episodes_total`
   - `FP/min = false_alerts_total / (mission_duration_sec / 60)`
