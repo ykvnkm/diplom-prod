@@ -20,6 +20,7 @@ import numpy as np
 import requests
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect  # type: ignore
 from fastapi.responses import FileResponse, HTMLResponse  # type: ignore
+from pydantic import BaseModel  # type: ignore
 
 from services.unified_runtime.feature_flags import MODE_FLAGS, is_enabled
 
@@ -37,6 +38,7 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 REPORT_DIR = Path("runtime/unified/reports")
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
 DETECTION_URL = "http://127.0.0.1:8001"
+RPI_SOURCE_URL = os.getenv("UNIFIED_RPI_SOURCE_URL", "http://127.0.0.1:9100")
 NAV_W = 853
 NAV_H = 480
 FX_NAV = 1100
@@ -107,7 +109,9 @@ class SourceProfile:
     emit_only_detections: bool
 
 
-def source_profile(kind: str) -> SourceProfile:
+def source_profile(kind: str, run_mode: str = "nsu", nsu_channel: str = "local", detect_enabled: bool = True) -> SourceProfile:
+    if run_mode == "nsu" and nsu_channel == "stream" and kind in {"video", "frames"}:
+        return SourceProfile(detection_stride=3, emit_only_detections=bool(detect_enabled))
     if kind == "rtsp":
         return SourceProfile(detection_stride=3, emit_only_detections=True)
     if kind == "frames":
@@ -174,6 +178,7 @@ def _apply_mode_flags(overrides: Dict[str, bool]):
 def _load_config() -> Dict:
     defaults = {
         "detection_url": os.getenv("UNIFIED_DETECTION_URL", DETECTION_URL),
+        "rpi_source_url": RPI_SOURCE_URL,
         "ui_template_path": str(UI_TEMPLATE_PATH),
         "mode_flags": {},
         "debug_presets": {},
@@ -188,6 +193,7 @@ def _load_config() -> Dict:
         mode_flags = {}
     return {
         "detection_url": str(loaded.get("detection_url", defaults["detection_url"])),
+        "rpi_source_url": str(loaded.get("rpi_source_url", defaults["rpi_source_url"])),
         "ui_template_path": str(loaded.get("ui_template_path", defaults["ui_template_path"])),
         "mode_flags": mode_flags,
         "debug_presets": loaded.get("debug_presets", {}),
@@ -1631,6 +1637,23 @@ def fetch_remote_source_stats(rpi_base_url: str, remote_session_id: str) -> Opti
     return None
 
 
+def get_rpi_source_url(override: str = "") -> str:
+    val = str(override or "").strip()
+    if val:
+        return val.rstrip("/")
+    cfg = getattr(getattr(globals().get("app", None), "state", None), "config", {}) or {}
+    return str(cfg.get("rpi_source_url", RPI_SOURCE_URL)).strip().rstrip("/")
+
+
+def fetch_remote_catalog(rpi_base_url: str) -> Dict[str, Any]:
+    resp = requests.get(f"{rpi_base_url}/mission/catalog", timeout=10)
+    resp.raise_for_status()
+    payload = resp.json()
+    if not isinstance(payload, dict):
+        raise RuntimeError("Некорректный ответ от RPi mission/catalog")
+    return payload
+
+
 def _validate_mode_chain(run_mode: str, nsu_channel: str, source_kind: str):
     if run_mode == "edge":
         if not is_enabled("enable_edge"):
@@ -2304,8 +2327,9 @@ def _build_reader(meta: Dict) -> Tuple[object, Optional[Tuple[str, str]]]:
     loop_input = bool(meta.get("loop", False))
 
     if nsu_channel == "stream":
+        rpi_base_url = get_rpi_source_url(str(meta.get("rpi_url", "")))
         remote_session, stream_url, rpi_base, remote_meta = start_remote_source(
-            meta.get("rpi_url", ""),
+            rpi_base_url,
             source_kind,
             meta["source"],
             loop_input=loop_input,
@@ -2343,6 +2367,14 @@ sessions: Dict[str, Dict] = {}
 detection_client = DetectionClient(DETECTION_URL)
 
 
+class StartStreamMissionRequest(BaseModel):
+    mode: str  # "video" | "frames"
+    item_id: str
+    detect: bool = True
+    model: str = "yolov8n_baseline_multiscale"
+    save_video: bool = False
+
+
 @app.on_event("startup")
 def startup_event():
     cfg = _load_config()
@@ -2367,10 +2399,140 @@ def health():
     return {
         "status": "ok",
         "detection_url": det.base_url,
+        "rpi_source_url": get_rpi_source_url(""),
         "detection": d_health,
         "modes": MODE_FLAGS,
         "debug_presets": sorted(list(DEBUG_PRESET_PATHS.keys())),
         "active_sessions": sum(1 for s in sessions.values() if not s.get("stop", False)),
+    }
+
+
+@app.get("/stream/connection")
+def stream_connection():
+    rpi_url = get_rpi_source_url("")
+    try:
+        resp = requests.get(f"{rpi_url}/health", timeout=5)
+        resp.raise_for_status()
+        payload = resp.json() if resp.content else {}
+        return {"ok": True, "rpi_url": rpi_url, "health": payload}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "rpi_url": rpi_url, "detail": str(exc)}
+
+
+@app.get("/stream/catalog")
+def stream_catalog():
+    rpi_url = get_rpi_source_url("")
+    try:
+        payload = fetch_remote_catalog(rpi_url)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Не удалось получить каталог миссий с RPi: {exc}")
+    return {"ok": True, "rpi_url": rpi_url, **payload}
+
+
+@app.post("/stream/start_mission")
+def stream_start_mission(req: StartStreamMissionRequest):
+    mode = str(req.mode or "").strip().lower()
+    if mode not in {"video", "frames"}:
+        raise HTTPException(status_code=400, detail="mode должен быть video или frames")
+
+    _validate_mode_chain("nsu", "stream", mode)
+    rpi_url = get_rpi_source_url("")
+    try:
+        catalog = fetch_remote_catalog(rpi_url)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Не удалось получить каталог миссий с RPi: {exc}")
+
+    source_value = ""
+    annotations_coco_value = ""
+    mission_id = str(req.item_id or "").strip()
+    if mode == "video":
+        videos = catalog.get("videos", [])
+        if not isinstance(videos, list):
+            videos = []
+        matched = next((v for v in videos if str(v.get("id", "")) == mission_id), None)
+        if not matched:
+            raise HTTPException(status_code=400, detail=f"Видео миссии не найдено: {mission_id}")
+        source_value = str(matched.get("path", "")).strip()
+        if not source_value:
+            raise HTTPException(status_code=400, detail=f"Путь видео пустой для миссии: {mission_id}")
+    else:
+        missions = catalog.get("missions", [])
+        if not isinstance(missions, list):
+            missions = []
+        matched = next((m for m in missions if str(m.get("id", "")) == mission_id), None)
+        if not matched:
+            raise HTTPException(status_code=400, detail=f"Миссия кадров не найдена: {mission_id}")
+        source_value = str(matched.get("images_dir", "")).strip()
+        annotations_coco_value = str(matched.get("annotations_json", "")).strip()
+        if not source_value:
+            raise HTTPException(status_code=400, detail=f"Путь images пустой для миссии: {mission_id}")
+
+    session_id = uuid.uuid4().hex
+    created_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_stem = f"{created_ts}_CPU_{session_id}"
+    model_ui = str(req.model or "yolov8n_baseline_multiscale").strip().lower()
+    detector_name = _resolve_detector(model_ui)
+
+    detector_conf = None
+    detector_iou = None
+    detector_max_det = None
+    display_conf = None
+    target_fps = None
+    debug_preset_name = ""
+    debug_preset_meta = None
+    if mode == "frames":
+        debug_preset_name = "nsu_frames_yolov8n_alert_contract"
+        debug_preset_meta = _load_debug_preset(debug_preset_name)
+        model_ui = debug_preset_meta["model_ui"]
+        detector_name = _resolve_detector(model_ui)
+        detector_conf = float(debug_preset_meta.get("infer_conf", debug_preset_meta["detector_conf"]))
+        detector_iou = float(debug_preset_meta.get("infer_nms_iou", 0.7))
+        detector_max_det = int(debug_preset_meta.get("infer_max_det", 300))
+        display_conf = float(debug_preset_meta.get("display_conf", detector_conf))
+        target_fps = debug_preset_meta.get("target_fps")
+
+    sessions[session_id] = {
+        "run_mode": "nsu",
+        "nsu_channel": "stream",
+        "source_kind": mode,
+        "source": source_value,
+        "rpi_url": rpi_url,
+        "detect": bool(req.detect),
+        "loop": True,
+        "stop": False,
+        "delete_after": False,
+        "device": "CPU",
+        "save_video": bool(req.save_video),
+        "created_ts": created_ts,
+        "report_stem": report_stem,
+        "model_ui": model_ui,
+        "model": detector_name,
+        "detector_conf": detector_conf,
+        "detector_iou": detector_iou,
+        "detector_max_det": detector_max_det,
+        "display_conf": display_conf,
+        "target_fps": target_fps,
+        "debug_preset": debug_preset_name,
+        "debug_preset_meta": debug_preset_meta,
+        "marker_mode": "auto",
+        "remote_link": None,
+        "annotations_dir": "",
+        "coco_gt_override": annotations_coco_value if mode == "frames" else "",
+        "stream_mission_id": mission_id,
+        "stream_realtime": True,
+        "stream_target_fps": float(6.0),
+        "stream_jitter_ms": 0,
+        "stream_drop_if_lag": True,
+        "stream_max_duration_sec": 0.0,
+        "stream_jpeg_quality": 80,
+    }
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "mode": mode,
+        "mission_id": mission_id,
+        "detect": bool(req.detect),
+        "coco_gt": annotations_coco_value if mode == "frames" else "",
     }
 
 
@@ -2881,7 +3043,7 @@ async def ws_process(websocket: WebSocket, session_id: str):
     save_video = bool(meta.get("save_video", False))
     report_stem = meta.get("report_stem", f"{session_id}")
 
-    profile = source_profile(source_kind)
+    profile = source_profile(source_kind, run_mode=run_mode, nsu_channel=nsu_channel, detect_enabled=detect_enabled)
 
     sessions[session_id]["stop"] = False
     loop = asyncio.get_event_loop()

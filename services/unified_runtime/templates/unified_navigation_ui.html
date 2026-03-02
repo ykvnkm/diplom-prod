@@ -203,16 +203,14 @@
         </div>
       </div>
       <div id="rpi-row" style="display:none; margin-bottom:12px;">
-        <label style="display:block; color:var(--muted); font-size:12px; margin-bottom:6px;">URL source-сервиса RaspberryPi</label>
-        <input type="text" id="rpi-url" placeholder="http://192.168.1.50:9100" style="width:100%; padding:11px 12px; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.3); color:var(--text); font-weight:600;" />
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+          <div style="font-size:12px; color:var(--muted);">Подключение к RaspberryPi: <strong id="rpi-conn-status" style="color:var(--text);">не проверено</strong></div>
+          <button id="btn-check-rpi" type="button" class="btn" style="width:auto; padding:8px 12px;">Проверить подключение</button>
+        </div>
       </div>
       <div id="stream-mission-panel" style="display:none; margin-bottom:12px; padding:10px; border-radius:12px; border:1px solid rgba(255,255,255,0.12); background:rgba(0,0,0,0.18);">
         <div style="font-weight:700; font-size:13px; margin-bottom:8px;">Потоковая миссия (RPi источник)</div>
         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
-          <div style="grid-column:1 / -1;">
-            <label style="display:block; color:var(--muted); font-size:12px; margin-bottom:4px;">Mission ID (опционально)</label>
-            <input type="text" id="stream-mission-id" placeholder="mission_live_01" style="width:100%; padding:10px; border-radius:9px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.25); color:var(--text);" />
-          </div>
           <div>
             <label style="display:block; color:var(--muted); font-size:12px; margin-bottom:4px;">Target FPS</label>
             <input type="number" id="stream-target-fps" value="6" min="0" step="0.1" style="width:100%; padding:10px; border-radius:9px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.25); color:var(--text);" />
@@ -256,8 +254,8 @@
             <small style="color: var(--muted);">Поддерживаются mp4/mov/avi</small>
           </label>
           <div id="upload-remote-wrap" style="display:none; margin-bottom:10px;">
-            <label style="display:block; color:var(--muted); font-size:13px; margin-bottom:6px;">Путь к видео на RaspberryPi</label>
-            <input type="text" id="video-source-path" placeholder="/home/pi/data/mission.mp4" style="width:100%; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.3); color:var(--text); font-weight:600;" />
+            <label style="display:block; color:var(--muted); font-size:13px; margin-bottom:6px;">Видео-миссия на RaspberryPi</label>
+            <select id="video-mission-select" style="width:100%; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.3); color:var(--text); font-weight:600;"></select>
           </div>
       <div style="display:flex; align-items:center; gap:10px; margin:10px 0 4px;">
         <label class="switch">
@@ -307,7 +305,7 @@
         </div>
       </div>
           <div style="margin-top: 12px;">
-            <button class="btn" type="submit">Старт обработки</button>
+            <button class="btn" type="submit" id="btn-start-video">Старт обработки</button>
           </div>
         </form>
       </div>
@@ -368,6 +366,10 @@
             <label style="display:block; color:var(--muted); font-size:13px; margin-bottom:6px;">Путь к потоку кадров</label>
             <input type="text" id="frames-dir" value="/Users/ykvnkm/Desktop/Diplom/public/images" style="width:100%; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.3); color:var(--text); font-weight:600;" />
           </div>
+          <div id="frames-mission-wrap" style="display:none; margin-bottom:12px;">
+            <label style="display:block; color:var(--muted); font-size:13px; margin-bottom:6px;">Фото-миссия на RaspberryPi</label>
+            <select id="frames-mission-select" style="width:100%; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.3); color:var(--text); font-weight:600;"></select>
+          </div>
           <div style="margin-bottom:12px;">
             <label style="display:block; color:var(--muted); font-size:13px; margin-bottom:6px;">COCO аннотации (.json)</label>
             <input type="file" id="frames-coco-file" accept=".json,application/json" style="width:100%; padding:10px; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.3); color:var(--text);" />
@@ -387,14 +389,14 @@
             </label>
           </div>
           <div style="margin-top: 12px;">
-            <button class="btn" type="submit">Старт по кадрам</button>
+            <button class="btn" type="submit" id="btn-start-frames">Старт по кадрам</button>
           </div>
         </form>
       </div>
 
       <div id="status">Ожидаю загрузку...</div>
       <div style="margin-top:8px;">
-        <button id="btn-stop" class="btn" style="background:linear-gradient(120deg,#f43f5e,#fb7185); box-shadow:0 12px 30px rgba(244,63,94,0.35);">Стоп и сохранить отчет</button>
+        <button id="btn-stop" class="btn" style="background:linear-gradient(120deg,#f43f5e,#fb7185); box-shadow:0 12px 30px rgba(244,63,94,0.35);">Завершить миссию</button>
       </div>
       <div class="stats" id="stats-video">
         <div class="chip">Людей в кадре: <strong id="persons-video">-</strong></div>
@@ -459,9 +461,9 @@
     const runMode = document.getElementById('run-mode');
     const nsuChannel = document.getElementById('nsu-channel');
     const rpiRow = document.getElementById('rpi-row');
-    const rpiUrl = document.getElementById('rpi-url');
+    const rpiConnStatus = document.getElementById('rpi-conn-status');
+    const checkRpiBtn = document.getElementById('btn-check-rpi');
     const streamMissionPanel = document.getElementById('stream-mission-panel');
-    const streamMissionId = document.getElementById('stream-mission-id');
     const streamRealtime = document.getElementById('stream-realtime');
     const streamTargetFps = document.getElementById('stream-target-fps');
     const streamJitterMs = document.getElementById('stream-jitter-ms');
@@ -470,7 +472,9 @@
     const streamJpegQuality = document.getElementById('stream-jpeg-quality');
     const uploadLocalWrap = document.getElementById('upload-local-wrap');
     const uploadRemoteWrap = document.getElementById('upload-remote-wrap');
-    const videoSourcePath = document.getElementById('video-source-path');
+    const videoMissionSelect = document.getElementById('video-mission-select');
+    const framesMissionWrap = document.getElementById('frames-mission-wrap');
+    const framesMissionSelect = document.getElementById('frames-mission-select');
     const downloadBtn = document.createElement('a');
     downloadBtn.textContent = 'Скачать отчет о полёте (ZIP)';
     downloadBtn.style.display = 'inline-block';
@@ -499,6 +503,7 @@
     let wsTerminal = false;
     let manualStopRequested = false;
     let autoRestartTimer = null;
+    let streamCatalog = { videos: [], missions: [] };
     const tabFile = document.getElementById('tab-file');
     const tabRtsp = document.getElementById('tab-rtsp');
     const tabFrames = document.getElementById('tab-frames');
@@ -543,9 +548,102 @@
       streamMissionPanel.style.display = stream ? 'block' : 'none';
       uploadLocalWrap.style.display = localNsu ? 'block' : 'none';
       uploadRemoteWrap.style.display = localNsu ? 'none' : 'block';
+      framesMissionWrap.style.display = stream ? 'block' : 'none';
+      tabRtsp.style.display = stream ? 'none' : 'inline-block';
+      rtspInput.disabled = stream;
+      if (stream && tabRtsp.classList.contains('active')) {
+        activateTab('file');
+      }
+      document.getElementById('btn-start-video').textContent = stream ? 'Начать миссию' : 'Старт обработки';
+      document.getElementById('btn-start-frames').textContent = stream ? 'Начать миссию' : 'Старт по кадрам';
+      if (stream) {
+        statusBox.textContent = 'Потоковый режим: проверьте подключение и выберите миссию.';
+      }
     }
-    runMode.addEventListener('change', updateModeUi);
-    nsuChannel.addEventListener('change', updateModeUi);
+
+    async function checkRpiConnection(showStatus = true) {
+      try {
+        const res = await fetch('/stream/connection');
+        const data = await res.json();
+        if (data.ok) {
+          rpiConnStatus.textContent = 'подключено';
+          rpiConnStatus.style.color = '#86efac';
+          if (showStatus) statusBox.textContent = 'Подключение к RaspberryPi установлено.';
+          return true;
+        }
+        rpiConnStatus.textContent = 'недоступно';
+        rpiConnStatus.style.color = '#fca5a5';
+        if (showStatus) statusBox.textContent = data.detail || 'RaspberryPi недоступен';
+        return false;
+      } catch (e) {
+        rpiConnStatus.textContent = 'ошибка';
+        rpiConnStatus.style.color = '#fca5a5';
+        if (showStatus) statusBox.textContent = 'Ошибка проверки подключения к RaspberryPi';
+        return false;
+      }
+    }
+
+    function fillMissionSelects() {
+      const videos = Array.isArray(streamCatalog.videos) ? streamCatalog.videos : [];
+      const missions = Array.isArray(streamCatalog.missions) ? streamCatalog.missions : [];
+      videoMissionSelect.innerHTML = '';
+      framesMissionSelect.innerHTML = '';
+
+      for (const v of videos) {
+        const opt = document.createElement('option');
+        opt.value = String(v.id || '');
+        opt.textContent = v.name ? `${v.id} - ${v.name}` : String(v.id || '');
+        videoMissionSelect.appendChild(opt);
+      }
+      for (const m of missions) {
+        const opt = document.createElement('option');
+        opt.value = String(m.id || '');
+        opt.textContent = String(m.id || '');
+        framesMissionSelect.appendChild(opt);
+      }
+    }
+
+    async function loadStreamCatalog(showStatus = false) {
+      const connected = await checkRpiConnection(showStatus);
+      if (!connected) return false;
+      try {
+        const res = await fetch('/stream/catalog');
+        if (!res.ok) {
+          const e = await res.json().catch(() => ({}));
+          statusBox.textContent = e.detail || 'Не удалось получить каталог миссий';
+          return false;
+        }
+        const data = await res.json();
+        streamCatalog = {
+          videos: Array.isArray(data.videos) ? data.videos : [],
+          missions: Array.isArray(data.missions) ? data.missions : [],
+        };
+        fillMissionSelects();
+        if (showStatus) {
+          statusBox.textContent = `Каталог загружен: видео ${streamCatalog.videos.length}, миссий ${streamCatalog.missions.length}`;
+        }
+        return true;
+      } catch (e) {
+        statusBox.textContent = 'Ошибка загрузки каталога миссий';
+        return false;
+      }
+    }
+
+    checkRpiBtn.addEventListener('click', async () => {
+      await loadStreamCatalog(true);
+    });
+    runMode.addEventListener('change', async () => {
+      updateModeUi();
+      if (runMode.value === 'nsu' && nsuChannel.value === 'stream') {
+        await loadStreamCatalog(false);
+      }
+    });
+    nsuChannel.addEventListener('change', async () => {
+      updateModeUi();
+      if (runMode.value === 'nsu' && nsuChannel.value === 'stream') {
+        await loadStreamCatalog(false);
+      }
+    });
     updateModeUi();
 
     function resetRuntimeUi() {
@@ -567,7 +665,6 @@
     function appendStreamOptions(fd) {
       const stream = runMode.value === 'nsu' && nsuChannel.value === 'stream';
       if (!stream) return;
-      fd.append('stream_mission_id', streamMissionId.value.trim());
       fd.append('stream_realtime', streamRealtime.checked ? 'true' : 'false');
       fd.append('stream_target_fps', String(Number(streamTargetFps.value || 0)));
       fd.append('stream_jitter_ms', String(Number(streamJitterMs.value || 0)));
@@ -639,8 +736,8 @@
         statusBox.textContent = 'Выберите локальный видеофайл';
         return;
       }
-      if (!localNsu && !videoSourcePath.value.trim()) {
-        statusBox.textContent = 'Введите путь к видео источнику';
+      if (streamMode && !videoMissionSelect.value) {
+        statusBox.textContent = 'Выберите видео-миссию из каталога';
         return;
       }
       statusBox.textContent = localNsu ? 'Загружаю видео...' : 'Запускаю удаленный видеоисточник...';
@@ -663,15 +760,22 @@
       fd.append('marker_mode', markerModeFile.value);
       fd.append('run_mode', runMode.value);
       fd.append('nsu_channel', nsuChannel.value);
-      fd.append('rpi_url', rpiUrl.value.trim());
       appendStreamOptions(fd);
       let res;
       if (!streamMode && runMode.value === 'nsu') {
         res = await fetch('/upload', { method: 'POST', body: fd });
       } else {
-        fd.append('source_kind', 'video');
-        fd.append('source_value', videoSourcePath.value.trim());
-        res = await fetch('/start_source', { method: 'POST', body: fd });
+        res = await fetch('/stream/start_mission', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'video',
+            item_id: videoMissionSelect.value,
+            detect: detectEnabled,
+            model: modelFile.value,
+            save_video: saveVideoFile.checked,
+          }),
+        });
       }
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -679,13 +783,10 @@
         return;
       }
       const data = await res.json();
-      statusBox.textContent = `Видео получено, детекция ${data.detect ? 'включена' : 'отключена'}. Запускаю обработку...`;
-      if (data.applied_config) {
-        statusBox.textContent += ` Конфиг: ${data.applied_config}.`;
-      }
-      if (data.stream_mission_id) {
-        statusBox.textContent += ` Миссия: ${data.stream_mission_id}.`;
-      }
+      statusBox.textContent = streamMode
+        ? `Миссия запущена: ${data.mission_id || videoMissionSelect.value}. Детекция ${data.detect ? 'включена' : 'выключена'}.`
+        : `Видео получено, детекция ${data.detect ? 'включена' : 'отключена'}. Запускаю обработку...`;
+      if (data.applied_config) statusBox.textContent += ` Конфиг: ${data.applied_config}.`;
       resetRuntimeUi();
       currentSourceMode = 'video';
       startSocket(data.session_id);
@@ -694,6 +795,11 @@
 
     document.getElementById('rtsp-form').addEventListener('submit', async (e) => {
       e.preventDefault();
+      const streamMode = runMode.value === 'nsu' && nsuChannel.value === 'stream';
+      if (streamMode) {
+        statusBox.textContent = 'RTSP-режим в потоковой миссии отключен. Используйте Видео или Поток кадров.';
+        return;
+      }
       const url = document.getElementById('rtsp-url').value.trim();
       if (!url) {
         statusBox.textContent = 'Введите RTSP URL';
@@ -715,27 +821,10 @@
       fd.append('marker_mode', markerModeRtsp.value);
       fd.append('run_mode', runMode.value);
       fd.append('nsu_channel', nsuChannel.value);
-      fd.append('rpi_url', rpiUrl.value.trim());
       appendStreamOptions(fd);
       statusBox.textContent = 'Запускаю RTSP поток: ' + url;
       let res;
-      if (runMode.value === 'nsu' && nsuChannel.value === 'local') {
-        res = await fetch('/start_rtsp', { method: 'POST', body: fd });
-      } else {
-        const fd2 = new FormData();
-        fd2.append('source_kind', 'rtsp');
-        fd2.append('source_value', url);
-        fd2.append('detect', detectEnabled ? 'true' : 'false');
-        fd2.append('device', 'CPU');
-        fd2.append('save_video', saveVideoRtsp.checked ? 'true' : 'false');
-        fd2.append('model', modelRtsp.value);
-        fd2.append('marker_mode', markerModeRtsp.value);
-        fd2.append('run_mode', runMode.value);
-        fd2.append('nsu_channel', nsuChannel.value);
-        fd2.append('rpi_url', rpiUrl.value.trim());
-        appendStreamOptions(fd2);
-        res = await fetch('/start_source', { method: 'POST', body: fd2 });
-      }
+      res = await fetch('/start_rtsp', { method: 'POST', body: fd });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         statusBox.textContent = err.detail || 'Ошибка запуска RTSP';
@@ -757,9 +846,14 @@
 
     document.getElementById('frames-form').addEventListener('submit', async (e) => {
       e.preventDefault();
+      const streamMode = runMode.value === 'nsu' && nsuChannel.value === 'stream';
       const dir = framesDir.value.trim();
-      if (!dir) {
+      if (!streamMode && !dir) {
         statusBox.textContent = 'Введите путь к папке кадров';
+        return;
+      }
+      if (streamMode && !framesMissionSelect.value) {
+        statusBox.textContent = 'Выберите фото-миссию из каталога';
         return;
       }
       summaryEl.style.display = 'none';
@@ -768,37 +862,48 @@
         clearTimeout(autoRestartTimer);
         autoRestartTimer = null;
       }
-      const fd = new FormData();
-      fd.append('source_kind', 'frames');
-      fd.append('source_value', dir);
-      fd.append('detect', 'true');
-      fd.append('device', 'CPU');
-      fd.append('save_video', saveVideoFrames.checked ? 'true' : 'false');
-      fd.append('marker_mode', markerModeFrames.value);
-      fd.append('run_mode', runMode.value);
-      fd.append('nsu_channel', nsuChannel.value);
-      fd.append('rpi_url', rpiUrl.value.trim());
-      appendStreamOptions(fd);
-      const cocoFile = framesCocoFile.files && framesCocoFile.files[0] ? framesCocoFile.files[0] : null;
-      if (cocoFile) {
-        fd.append('annotations_file', cocoFile);
+      let res;
+      statusBox.textContent = streamMode ? 'Запускаю фото-миссию...' : 'Запускаю поток кадров из папки...';
+      if (streamMode) {
+        res = await fetch('/stream/start_mission', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'frames',
+            item_id: framesMissionSelect.value,
+            detect: true,
+            model: 'yolov8n_baseline_multiscale',
+            save_video: saveVideoFrames.checked,
+          }),
+        });
+      } else {
+        const fd = new FormData();
+        fd.append('source_kind', 'frames');
+        fd.append('source_value', dir);
+        fd.append('detect', 'true');
+        fd.append('device', 'CPU');
+        fd.append('save_video', saveVideoFrames.checked ? 'true' : 'false');
+        fd.append('marker_mode', markerModeFrames.value);
+        fd.append('run_mode', runMode.value);
+        fd.append('nsu_channel', nsuChannel.value);
+        const cocoFile = framesCocoFile.files && framesCocoFile.files[0] ? framesCocoFile.files[0] : null;
+        if (cocoFile) {
+          fd.append('annotations_file', cocoFile);
+        }
+        res = await fetch('/start_source', { method: 'POST', body: fd });
       }
-
-      statusBox.textContent = 'Запускаю поток кадров из папки...';
-      const res = await fetch('/start_source', { method: 'POST', body: fd });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         statusBox.textContent = err.detail || 'Ошибка запуска потока кадров';
         return;
       }
       const data = await res.json();
-      statusBox.textContent = `Источник кадров получен (${data.mode || 'frames'}), детекция ${data.detect ? 'включена' : 'отключена'}.`;
-      statusBox.textContent += ` Конфиг: ${data.applied_config || 'nsu_frames_yolov8n_alert_contract'}.`;
+      statusBox.textContent = streamMode
+        ? `Фото-миссия запущена: ${data.mission_id || framesMissionSelect.value}.`
+        : `Источник кадров получен (${data.mode || 'frames'}), детекция ${data.detect ? 'включена' : 'отключена'}.`;
+      if (!streamMode) statusBox.textContent += ` Конфиг: ${data.applied_config || 'nsu_frames_yolov8n_alert_contract'}.`;
       if (data.coco_gt) {
         statusBox.textContent += ` COCO: ${data.coco_gt}.`;
-      }
-      if (data.stream_mission_id) {
-        statusBox.textContent += ` Миссия: ${data.stream_mission_id}.`;
       }
       resetRuntimeUi();
       currentSourceMode = 'frames';

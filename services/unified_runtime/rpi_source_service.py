@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import os
 import random
 import time
 import uuid
@@ -15,6 +16,8 @@ from pydantic import BaseModel, Field
 app = FastAPI(title="RPi Source Service", description="Streams raw content from RaspberryPi")
 
 SESSIONS: Dict[str, Dict] = {}
+RPI_VIDEO_DIR = Path(os.getenv("RPI_VIDEO_DIR", "/home/ykvnkm/Documents/test_videos"))
+RPI_MISSIONS_DIR = Path(os.getenv("RPI_MISSIONS_DIR", "/home/ykvnkm/Documents/missions"))
 
 
 class StartSourceRequest(BaseModel):
@@ -41,6 +44,47 @@ class StartSourceResponse(BaseModel):
 
 class StopSourceResponse(BaseModel):
     status: str
+
+
+def _video_files_catalog(root: Path) -> List[Dict[str, str]]:
+    if not root.exists() or not root.is_dir():
+        return []
+    out: List[Dict[str, str]] = []
+    allowed_ext = {".mp4", ".mov", ".avi", ".mkv", ".m4v"}
+    for p in sorted(root.rglob("*")):
+        if not p.is_file() or p.suffix.lower() not in allowed_ext:
+            continue
+        out.append(
+            {
+                "id": p.stem,
+                "name": p.name,
+                "path": str(p),
+            }
+        )
+    return out
+
+
+def _missions_catalog(root: Path) -> List[Dict[str, str]]:
+    if not root.exists() or not root.is_dir():
+        return []
+    out: List[Dict[str, str]] = []
+    for d in sorted(root.iterdir()):
+        if not d.is_dir():
+            continue
+        images_dir = d / "images"
+        ann_dir = d / "annotations"
+        if not images_dir.exists() or not images_dir.is_dir():
+            continue
+        ann_jsons = sorted([p for p in ann_dir.rglob("*.json")]) if ann_dir.exists() and ann_dir.is_dir() else []
+        out.append(
+            {
+                "id": d.name,
+                "name": d.name,
+                "images_dir": str(images_dir),
+                "annotations_json": str(ann_jsons[0]) if ann_jsons else "",
+            }
+        )
+    return out
 
 
 class FolderFrameReader:
@@ -91,6 +135,17 @@ def health():
             }
         )
     return {"status": "ok", "active_sessions": active, "sessions": sessions_short}
+
+
+@app.get("/mission/catalog")
+def mission_catalog():
+    return {
+        "status": "ok",
+        "video_root": str(RPI_VIDEO_DIR),
+        "missions_root": str(RPI_MISSIONS_DIR),
+        "videos": _video_files_catalog(RPI_VIDEO_DIR),
+        "missions": _missions_catalog(RPI_MISSIONS_DIR),
+    }
 
 
 @app.get("/source/session/{session_id}")

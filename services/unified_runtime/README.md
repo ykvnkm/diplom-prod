@@ -72,21 +72,44 @@ python -m uvicorn services.unified_runtime.unified_navigation_service:app --host
   - c параметрами из `alert`/`eval` (`window_sec`, `quorum_k`, `cooldown_sec`, `gap_end_sec`, `gt_gap_end_sec`, `match_tolerance_sec`, `min_detections_per_frame`, `thresholds`, `target_recall`, `fp_per_min_target`)
   - `operator_confirm_delay_sec` в UI-оценке не используется.
 
-На RaspberryPi:
+На RaspberryPi (ручной запуск):
 
 ```bash
 python -m uvicorn services.unified_runtime.rpi_source_service:app --host 0.0.0.0 --port 9100
 ```
+
+### Автозапуск на RaspberryPi (как на дроне)
+
+```bash
+cd /path/to/Diplom-prod
+bash scripts/rpi/install_rpi_source_service.sh /path/to/Diplom-prod <user> <group>
+```
+
+Пример:
+
+```bash
+bash scripts/rpi/install_rpi_source_service.sh /home/ykvnkm/Diplom-prod ykvnkm ykvnkm
+```
+
+Сервис будет автоматически подниматься при включении устройства:
+- unit: `rescueai-rpi-source.service`
+- порт: `9100`
+- видео-каталог: `/home/<user>/Documents/test_videos`
+- миссии кадров: `/home/<user>/Documents/missions/<mission_id>/images`
+- аннотации миссии: `/home/<user>/Documents/missions/<mission_id>/annotations/*.json`
 
 ## НСУ-потоковый режим (миссия в realtime)
 
 В UI:
 - `Режим вычислений`: `1 - НСУ`
 - `Подрежим НСУ`: `1.2 Потоковый (RPi source)`
-- `URL source-сервиса RaspberryPi`: например `http://192.168.1.50:9100`
+- ручной ввод URL RPi не требуется (используется `rpi_source_url` из `configs/unified_runtime.yaml`)
+- кнопка `Проверить подключение` проверяет доступность source-сервиса на RPi
+- выбор миссии выполняется из каталога RPi:
+  - `Видео` -> список файлов из `test_videos`
+  - `Поток кадров` -> список папок миссий из `missions`
 
 Доступны параметры потоковой миссии:
-- `Mission ID`
 - `Target FPS`
 - `JPEG quality`
 - `Jitter (ms)`
@@ -98,6 +121,8 @@ python -m uvicorn services.unified_runtime.rpi_source_service:app --host 0.0.0.0
 - RaspberryPi отдает поток через `rpi_source_service` (`/source/start`, `/source/stream/{id}`).
 - Инференс и навигация выполняются на НСУ (локально в `unified_navigation_service` + `detection_service`).
 - В UI выводятся телеметрии канала: `Поток FPS (RPi)` и `Дроп кадров (RPi)`.
+- кнопка `Начать миссию` запускает поток на RPi и обработку на НСУ.
+- кнопка `Завершить миссию` останавливает поток на RPi и завершает обработку НСУ.
 
 ## Локальный RTSP (mediamtx + ffmpeg)
 
