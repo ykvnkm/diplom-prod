@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 import cv2
 import numpy as np
 import torch
+import requests
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile  # type: ignore
 from pydantic import BaseModel  # type: ignore
 from ultralytics import YOLO
@@ -86,6 +87,56 @@ def env_flag(name: str, default: bool = False) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _download_if_missing(target: Path, url: str, *, label: str, timeout_sec: int = 120) -> None:
+    if target.exists():
+        return
+    if not url:
+        raise FileNotFoundError(f"Отсутствует {label}: {target} (URL не задан)")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target.with_suffix(target.suffix + ".tmp")
+    try:
+        with requests.get(url, stream=True, timeout=timeout_sec) as response:
+            response.raise_for_status()
+            with tmp_path.open("wb") as fd:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        fd.write(chunk)
+        tmp_path.replace(target)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def ensure_yolo_assets() -> Path:
+    yolo_target = Path(os.getenv("YOLO_WEIGHTS_PATH", str(YOLOV8N_BASELINE_MULTISCALE_WEIGHTS)))
+    yolo_url = os.getenv(
+        "YOLO_WEIGHTS_URL",
+        "https://github.com/ykvnkm/rescueai-models/releases/download/v1/yolov8n_baseline_multiscale.pt",
+    )
+    _download_if_missing(yolo_target, yolo_url, label="веса YOLO")
+    return yolo_target
+
+
+def ensure_nanodet_assets(require_onnx: bool = False) -> None:
+    if env_flag("REQUIRE_NANODET_CONFIG", default=False):
+        config_target = Path(os.getenv("NANODET_CONFIG", str(NANODET_CONFIG)))
+        config_url = os.getenv("NANODET_CONFIG_URL", "")
+        _download_if_missing(config_target, config_url, label="конфиг NanoDet")
+
+    require_pth = env_flag("REQUIRE_NANODET_PTH", default=True) or not require_onnx
+    if require_pth:
+        pth_target = Path(os.getenv("NANODET_WEIGHTS", str(NANODET_WEIGHTS)))
+        pth_url = os.getenv("NANODET_PTH_URL", "")
+        _download_if_missing(pth_target, pth_url, label="веса NanoDet (pth)")
+
+    require_onnx_flag = env_flag("REQUIRE_NANODET_ONNX", default=False) or require_onnx
+    if require_onnx_flag:
+        onnx_target = Path(os.getenv("NANODET_ONNX_PATH", str(NANODET_ONNX)))
+        onnx_url = os.getenv("NANODET_ONNX_URL", "")
+        _download_if_missing(onnx_target, onnx_url, label="веса NanoDet (onnx)")
+
+
 def get_device(device_str: str = "auto"):
     device_env = os.getenv("DET_DEVICE")
     return torch.device(
@@ -105,6 +156,7 @@ def load_yolo(device, weights_path: Path = YOLOV8N_BASELINE_MULTISCALE_WEIGHTS):
 
 
 def load_nanodet_plus(device):
+    ensure_nanodet_assets(require_onnx=False)
     config_path = Path(os.getenv("NANODET_CONFIG", str(NANODET_CONFIG)))
     weights_path = Path(os.getenv("NANODET_WEIGHTS", str(NANODET_WEIGHTS)))
     if not config_path.exists():
@@ -159,6 +211,7 @@ def load_nanodet_plus(device):
 
 
 def load_nanodet_plus_onnx(device):
+    ensure_nanodet_assets(require_onnx=True)
     config_path = Path(os.getenv("NANODET_CONFIG", str(NANODET_CONFIG)))
     onnx_path = Path(os.getenv("NANODET_ONNX_PATH", str(NANODET_ONNX)))
     if not config_path.exists():
@@ -343,6 +396,9 @@ MODELS: Dict[str, dict] = {}
 @app.on_event("startup")
 def _load_model():
     device = get_device()
+    yolo_weights = ensure_yolo_assets()
+    YOLO_MODEL_WEIGHTS["yolov8n_baseline_multiscale"] = yolo_weights
+    YOLO_MODEL_WEIGHTS["yolo"] = yolo_weights
     MODELS["yolov8n_baseline_multiscale"] = {
         "model": load_yolo(device, YOLO_MODEL_WEIGHTS["yolov8n_baseline_multiscale"]),
         "device": device,
@@ -367,6 +423,8 @@ def get_model(name: str):
         return MODELS[name]
     device = get_device()
     if name in YOLO_MODEL_WEIGHTS:
+        if name in ("yolov8n_baseline_multiscale", "yolo") and not YOLO_MODEL_WEIGHTS[name].exists():
+            YOLO_MODEL_WEIGHTS[name] = ensure_yolo_assets()
         MODELS[name] = {
             "model": load_yolo(device, YOLO_MODEL_WEIGHTS[name]),
             "device": device,

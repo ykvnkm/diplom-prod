@@ -1730,10 +1730,15 @@ def run_unified_pipeline(
     fps = run_reader.fps()
     source_frame_idx = 0
 
+    force_fixed_height_frames = mode_label.endswith(":frames")
+    fixed_height_m = 300.0
+
     if nav_mode == "marker":
         pos = np.array([0.0, 0.0, 1.5], dtype=float)
     else:
         pos = np.array([0.0, 0.0, 0.0], dtype=float)
+    if force_fixed_height_frames:
+        pos[2] = fixed_height_m
 
     traj_points.append(pos.copy())
     time_stamps.append(0.0)
@@ -1876,6 +1881,8 @@ def run_unified_pipeline(
         pos[0] = float(x_nav0 * MARKER_SIZE_XY_M)
         pos[1] = float(y_nav0 * MARKER_SIZE_XY_M)
         pos[2] = float(alt_agl_state)
+        if force_fixed_height_frames:
+            pos[2] = fixed_height_m
         traj_points[0] = pos.copy()
 
     while True:
@@ -2087,6 +2094,9 @@ def run_unified_pipeline(
                 step *= 80.0 / step_len
             pos[:2] = pos[:2] + step
             prev_gray_nm = gray
+
+        if force_fixed_height_frames:
+            pos[2] = fixed_height_m
 
         if nav_mode != "marker" and traj_points:
             prev = traj_points[-1]

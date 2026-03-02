@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Tool caches / test artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Local runtime outputs
+runtime/
+logs/
+*.log
+
+# Local model artifacts
+models/
+nanodet/nanodet/model/weights/
+
+# Local datasets / uploads (keep folder structure in git)
+public/images/*
+public/annotations/*
+!public/images/.gitkeep
+!public/annotations/.gitkeep
+
+# Temporary files
+*.tmp
