@@ -76,6 +76,27 @@ python -m uvicorn services.unified_runtime.unified_navigation_service:app --host
 python -m uvicorn services.unified_runtime.rpi_source_service:app --host 0.0.0.0 --port 9100
 ```
 
+## НСУ-потоковый режим (миссия в realtime)
+
+В UI:
+- `Режим вычислений`: `1 - НСУ`
+- `Подрежим НСУ`: `1.2 Потоковый (RPi source)`
+- `URL source-сервиса RaspberryPi`: например `http://192.168.1.50:9100`
+
+Доступны параметры потоковой миссии:
+- `Mission ID`
+- `Target FPS`
+- `JPEG quality`
+- `Jitter (ms)`
+- `Realtime pacing`
+- `Drop frame on lag`
+- `Макс. длит., сек`
+
+Под капотом:
+- RaspberryPi отдает поток через `rpi_source_service` (`/source/start`, `/source/stream/{id}`).
+- Инференс и навигация выполняются на НСУ (локально в `unified_navigation_service` + `detection_service`).
+- В UI выводятся телеметрии канала: `Поток FPS (RPi)` и `Дроп кадров (RPi)`.
+
 ## Локальный RTSP (mediamtx + ffmpeg)
 
 Быстрый локальный стенд для вкладки `RTSP поток`:

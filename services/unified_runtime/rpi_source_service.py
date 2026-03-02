@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime
+import random
+import time
 import uuid
 from pathlib import Path
 from typing import Dict, Generator, List, Optional
@@ -20,12 +22,21 @@ class StartSourceRequest(BaseModel):
     source: str
     loop: bool = False
     jpeg_quality: int = 80
+    mission_id: str = ""
+    realtime: bool = True
+    target_fps: float = 0.0
+    jitter_ms: int = 0
+    drop_if_lag: bool = True
+    max_duration_sec: float = 0.0
 
 
 class StartSourceResponse(BaseModel):
     session_id: str
     mode: str
     stream_url: str
+    mission_id: str
+    target_fps: float
+    realtime: bool
 
 
 class StopSourceResponse(BaseModel):
@@ -43,7 +54,7 @@ class FolderFrameReader:
         exts = ("*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG")
         files: List[Path] = []
         for ext in exts:
-            files.extend(self.folder.glob(ext))
+            files.extend(self.folder.rglob(ext))
         files = sorted(files)
         return files
 
@@ -66,7 +77,44 @@ class FolderFrameReader:
 @app.get("/health")
 def health():
     active = sum(1 for s in SESSIONS.values() if not s.get("stop", False))
-    return {"status": "ok", "active_sessions": active}
+    sessions_short = []
+    for sid, meta in SESSIONS.items():
+        sessions_short.append(
+            {
+                "session_id": sid,
+                "mission_id": meta.get("mission_id", ""),
+                "mode": meta.get("mode"),
+                "stop": bool(meta.get("stop", False)),
+                "frames_emitted": int(meta.get("frames_emitted", 0)),
+                "frames_dropped": int(meta.get("frames_dropped", 0)),
+                "target_fps": float(meta.get("target_fps", 0.0)),
+            }
+        )
+    return {"status": "ok", "active_sessions": active, "sessions": sessions_short}
+
+
+@app.get("/source/session/{session_id}")
+def source_session_info(session_id: str):
+    meta = SESSIONS.get(session_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Session not found")
+    started_at = float(meta.get("started_at_monotonic", 0.0) or 0.0)
+    now = time.monotonic()
+    uptime = max(0.0, now - started_at) if started_at > 0 else 0.0
+    emitted = int(meta.get("frames_emitted", 0))
+    return {
+        "session_id": session_id,
+        "mission_id": meta.get("mission_id", ""),
+        "mode": meta.get("mode", ""),
+        "source": meta.get("source", ""),
+        "stop": bool(meta.get("stop", False)),
+        "target_fps": float(meta.get("target_fps", 0.0)),
+        "realtime": bool(meta.get("realtime", True)),
+        "frames_emitted": emitted,
+        "frames_dropped": int(meta.get("frames_dropped", 0)),
+        "avg_emit_fps": (float(emitted) / uptime) if uptime > 1e-6 else 0.0,
+        "uptime_sec": uptime,
+    }
 
 
 @app.post("/source/start", response_model=StartSourceResponse)
@@ -76,6 +124,7 @@ def start_source(req: StartSourceRequest):
         raise HTTPException(status_code=400, detail="source is required")
 
     mode = req.mode
+    mission_id = req.mission_id.strip() or f"mission_{uuid.uuid4().hex[:10]}"
     if mode in ("file", "frames"):
         p = Path(source)
         if not p.exists():
@@ -84,17 +133,47 @@ def start_source(req: StartSourceRequest):
     session_id = uuid.uuid4().hex
     created = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
+    target_fps = float(req.target_fps or 0.0)
+    if target_fps < 0:
+        target_fps = 0.0
+    if mode == "file" and target_fps <= 0:
+        cap = cv2.VideoCapture(str(source))
+        if cap.isOpened():
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+            if fps > 0:
+                target_fps = fps
+        cap.release()
+    if mode == "frames" and target_fps <= 0:
+        target_fps = 6.0
+
     SESSIONS[session_id] = {
         "session_id": session_id,
+        "mission_id": mission_id,
         "mode": mode,
         "source": source,
         "loop": bool(req.loop),
         "created": created,
         "stop": False,
         "jpeg_quality": max(10, min(100, int(req.jpeg_quality))),
+        "realtime": bool(req.realtime),
+        "target_fps": float(target_fps),
+        "jitter_ms": max(0, int(req.jitter_ms)),
+        "drop_if_lag": bool(req.drop_if_lag),
+        "max_duration_sec": max(0.0, float(req.max_duration_sec or 0.0)),
+        "frames_emitted": 0,
+        "frames_dropped": 0,
+        "started_at_monotonic": 0.0,
+        "last_emit_ts": 0.0,
     }
     stream_url = f"/source/stream/{session_id}"
-    return StartSourceResponse(session_id=session_id, mode=mode, stream_url=stream_url)
+    return StartSourceResponse(
+        session_id=session_id,
+        mode=mode,
+        stream_url=stream_url,
+        mission_id=mission_id,
+        target_fps=float(target_fps),
+        realtime=bool(req.realtime),
+    )
 
 
 @app.post("/source/stop/{session_id}", response_model=StopSourceResponse)
@@ -115,6 +194,15 @@ def _mjpeg_generator(session_id: str) -> Generator[bytes, None, None]:
     source = meta["source"]
     quality = meta.get("jpeg_quality", 80)
     loop = bool(meta.get("loop", False))
+    realtime = bool(meta.get("realtime", True))
+    target_fps = float(meta.get("target_fps", 0.0))
+    jitter_ms = max(0, int(meta.get("jitter_ms", 0)))
+    drop_if_lag = bool(meta.get("drop_if_lag", True))
+    max_duration_sec = float(meta.get("max_duration_sec", 0.0))
+    start_ts = time.monotonic()
+    next_emit_ts = start_ts
+    emitted = 0
+    meta["started_at_monotonic"] = start_ts
 
     cap: Optional[cv2.VideoCapture] = None
     folder_reader: Optional[FolderFrameReader] = None
@@ -129,6 +217,8 @@ def _mjpeg_generator(session_id: str) -> Generator[bytes, None, None]:
 
         while True:
             if meta.get("stop"):
+                break
+            if max_duration_sec > 0 and (time.monotonic() - start_ts) > max_duration_sec:
                 break
 
             if mode in ("file", "rtsp") and cap is not None:
@@ -153,9 +243,28 @@ def _mjpeg_generator(session_id: str) -> Generator[bytes, None, None]:
                 if not ok:
                     break
 
+            if realtime and target_fps > 0:
+                now = time.monotonic()
+                lag = now - next_emit_ts
+                if lag > (1.0 / max(target_fps, 1e-6)) and drop_if_lag:
+                    meta["frames_dropped"] = int(meta.get("frames_dropped", 0)) + 1
+                    next_emit_ts += (1.0 / target_fps)
+                    continue
+                sleep_for = next_emit_ts - now
+                if jitter_ms > 0:
+                    sleep_for += random.uniform(0.0, float(jitter_ms) / 1000.0)
+                if sleep_for > 0:
+                    time.sleep(sleep_for)
+
             ok_jpg, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
             if not ok_jpg:
                 continue
+
+            emitted += 1
+            meta["frames_emitted"] = emitted
+            meta["last_emit_ts"] = time.monotonic()
+            if realtime and target_fps > 0:
+                next_emit_ts += (1.0 / target_fps)
 
             yield (
                 b"--frame\r\n"

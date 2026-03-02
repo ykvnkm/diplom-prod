@@ -206,6 +206,41 @@
         <label style="display:block; color:var(--muted); font-size:12px; margin-bottom:6px;">URL source-сервиса RaspberryPi</label>
         <input type="text" id="rpi-url" placeholder="http://192.168.1.50:9100" style="width:100%; padding:11px 12px; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.3); color:var(--text); font-weight:600;" />
       </div>
+      <div id="stream-mission-panel" style="display:none; margin-bottom:12px; padding:10px; border-radius:12px; border:1px solid rgba(255,255,255,0.12); background:rgba(0,0,0,0.18);">
+        <div style="font-weight:700; font-size:13px; margin-bottom:8px;">Потоковая миссия (RPi источник)</div>
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+          <div style="grid-column:1 / -1;">
+            <label style="display:block; color:var(--muted); font-size:12px; margin-bottom:4px;">Mission ID (опционально)</label>
+            <input type="text" id="stream-mission-id" placeholder="mission_live_01" style="width:100%; padding:10px; border-radius:9px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.25); color:var(--text);" />
+          </div>
+          <div>
+            <label style="display:block; color:var(--muted); font-size:12px; margin-bottom:4px;">Target FPS</label>
+            <input type="number" id="stream-target-fps" value="6" min="0" step="0.1" style="width:100%; padding:10px; border-radius:9px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.25); color:var(--text);" />
+          </div>
+          <div>
+            <label style="display:block; color:var(--muted); font-size:12px; margin-bottom:4px;">JPEG quality</label>
+            <input type="number" id="stream-jpeg-quality" value="80" min="10" max="100" step="1" style="width:100%; padding:10px; border-radius:9px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.25); color:var(--text);" />
+          </div>
+          <div>
+            <label style="display:block; color:var(--muted); font-size:12px; margin-bottom:4px;">Jitter (ms)</label>
+            <input type="number" id="stream-jitter-ms" value="0" min="0" step="1" style="width:100%; padding:10px; border-radius:9px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.25); color:var(--text);" />
+          </div>
+          <div>
+            <label style="display:block; color:var(--muted); font-size:12px; margin-bottom:4px;">Макс. длит., сек</label>
+            <input type="number" id="stream-max-duration" value="0" min="0" step="1" style="width:100%; padding:10px; border-radius:9px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.25); color:var(--text);" />
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-top:10px;">
+          <label style="display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px;">
+            <input type="checkbox" id="stream-realtime" checked />
+            Realtime pacing
+          </label>
+          <label style="display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px;">
+            <input type="checkbox" id="stream-drop-if-lag" checked />
+            Drop frame on lag
+          </label>
+        </div>
+      </div>
       <div style="display:flex; gap:8px; margin-bottom:12px;">
         <button id="tab-file" class="tab active">Видео</button>
         <button id="tab-rtsp" class="tab">RTSP поток</button>
@@ -366,6 +401,8 @@
         <div class="chip">Обработано кадров: <strong id="frames-processed">-</strong></div>
         <div class="chip">Текущий FPS: <strong id="fps-current">-</strong></div>
         <div class="chip">Средний FPS: <strong id="fps-avg">-</strong></div>
+        <div class="chip">Поток FPS (RPi): <strong id="stream-fps">-</strong></div>
+        <div class="chip">Дроп кадров (RPi): <strong id="stream-dropped">-</strong></div>
         <div class="chip" style="grid-column: 1 / -1;">Текущая высота: <strong id="height-current">-</strong></div>
       </div>
       <div class="stats" id="stats-frames" style="display:none;">
@@ -400,6 +437,8 @@
     const personsVideoEl = document.getElementById('persons-video');
     const fpsCurrentEl = document.getElementById('fps-current');
     const fpsAvgEl = document.getElementById('fps-avg');
+    const streamFpsEl = document.getElementById('stream-fps');
+    const streamDroppedEl = document.getElementById('stream-dropped');
     const framesProcessedEl = document.getElementById('frames-processed');
     const heightCurrentEl = document.getElementById('height-current');
     const personsEl = document.getElementById('persons');
@@ -421,6 +460,14 @@
     const nsuChannel = document.getElementById('nsu-channel');
     const rpiRow = document.getElementById('rpi-row');
     const rpiUrl = document.getElementById('rpi-url');
+    const streamMissionPanel = document.getElementById('stream-mission-panel');
+    const streamMissionId = document.getElementById('stream-mission-id');
+    const streamRealtime = document.getElementById('stream-realtime');
+    const streamTargetFps = document.getElementById('stream-target-fps');
+    const streamJitterMs = document.getElementById('stream-jitter-ms');
+    const streamDropIfLag = document.getElementById('stream-drop-if-lag');
+    const streamMaxDuration = document.getElementById('stream-max-duration');
+    const streamJpegQuality = document.getElementById('stream-jpeg-quality');
     const uploadLocalWrap = document.getElementById('upload-local-wrap');
     const uploadRemoteWrap = document.getElementById('upload-remote-wrap');
     const videoSourcePath = document.getElementById('video-source-path');
@@ -493,6 +540,7 @@
       const stream = runMode.value === 'nsu' && nsuChannel.value === 'stream';
       const localNsu = runMode.value === 'nsu' && nsuChannel.value === 'local';
       rpiRow.style.display = stream ? 'block' : 'none';
+      streamMissionPanel.style.display = stream ? 'block' : 'none';
       uploadLocalWrap.style.display = localNsu ? 'block' : 'none';
       uploadRemoteWrap.style.display = localNsu ? 'none' : 'block';
     }
@@ -505,6 +553,8 @@
       personsVideoEl.textContent = '-';
       fpsCurrentEl.textContent = '-';
       fpsAvgEl.textContent = '-';
+      streamFpsEl.textContent = '-';
+      streamDroppedEl.textContent = '-';
       framesProcessedEl.textContent = '-';
       heightCurrentEl.textContent = '-';
       personsEl.textContent = '-';
@@ -512,6 +562,18 @@
       fpMinuteEl.textContent = '-';
       summaryEl.textContent = '';
       summaryEl.style.display = 'none';
+    }
+
+    function appendStreamOptions(fd) {
+      const stream = runMode.value === 'nsu' && nsuChannel.value === 'stream';
+      if (!stream) return;
+      fd.append('stream_mission_id', streamMissionId.value.trim());
+      fd.append('stream_realtime', streamRealtime.checked ? 'true' : 'false');
+      fd.append('stream_target_fps', String(Number(streamTargetFps.value || 0)));
+      fd.append('stream_jitter_ms', String(Number(streamJitterMs.value || 0)));
+      fd.append('stream_drop_if_lag', streamDropIfLag.checked ? 'true' : 'false');
+      fd.append('stream_max_duration_sec', String(Number(streamMaxDuration.value || 0)));
+      fd.append('stream_jpeg_quality', String(Number(streamJpegQuality.value || 80)));
     }
 
     // Init Plotly charts with reusable layouts
@@ -602,6 +664,7 @@
       fd.append('run_mode', runMode.value);
       fd.append('nsu_channel', nsuChannel.value);
       fd.append('rpi_url', rpiUrl.value.trim());
+      appendStreamOptions(fd);
       let res;
       if (!streamMode && runMode.value === 'nsu') {
         res = await fetch('/upload', { method: 'POST', body: fd });
@@ -619,6 +682,9 @@
       statusBox.textContent = `Видео получено, детекция ${data.detect ? 'включена' : 'отключена'}. Запускаю обработку...`;
       if (data.applied_config) {
         statusBox.textContent += ` Конфиг: ${data.applied_config}.`;
+      }
+      if (data.stream_mission_id) {
+        statusBox.textContent += ` Миссия: ${data.stream_mission_id}.`;
       }
       resetRuntimeUi();
       currentSourceMode = 'video';
@@ -650,6 +716,7 @@
       fd.append('run_mode', runMode.value);
       fd.append('nsu_channel', nsuChannel.value);
       fd.append('rpi_url', rpiUrl.value.trim());
+      appendStreamOptions(fd);
       statusBox.textContent = 'Запускаю RTSP поток: ' + url;
       let res;
       if (runMode.value === 'nsu' && nsuChannel.value === 'local') {
@@ -666,6 +733,7 @@
         fd2.append('run_mode', runMode.value);
         fd2.append('nsu_channel', nsuChannel.value);
         fd2.append('rpi_url', rpiUrl.value.trim());
+        appendStreamOptions(fd2);
         res = await fetch('/start_source', { method: 'POST', body: fd2 });
       }
       if (!res.ok) {
@@ -677,6 +745,9 @@
       statusBox.textContent = `Источник получен (${data.mode || 'rtsp'}), детекция ${data.detect ? 'включена' : 'отключена'}.`;
       if (data.applied_config) {
         statusBox.textContent += ` Конфиг: ${data.applied_config}.`;
+      }
+      if (data.stream_mission_id) {
+        statusBox.textContent += ` Миссия: ${data.stream_mission_id}.`;
       }
       resetRuntimeUi();
       currentSourceMode = 'rtsp';
@@ -707,6 +778,7 @@
       fd.append('run_mode', runMode.value);
       fd.append('nsu_channel', nsuChannel.value);
       fd.append('rpi_url', rpiUrl.value.trim());
+      appendStreamOptions(fd);
       const cocoFile = framesCocoFile.files && framesCocoFile.files[0] ? framesCocoFile.files[0] : null;
       if (cocoFile) {
         fd.append('annotations_file', cocoFile);
@@ -722,6 +794,9 @@
       const data = await res.json();
       statusBox.textContent = `Источник кадров получен (${data.mode || 'frames'}), детекция ${data.detect ? 'включена' : 'отключена'}.`;
       statusBox.textContent += ` Конфиг: ${data.applied_config || 'nsu_frames_yolov8n_alert_contract'}.`;
+      if (data.stream_mission_id) {
+        statusBox.textContent += ` Миссия: ${data.stream_mission_id}.`;
+      }
       resetRuntimeUi();
       currentSourceMode = 'frames';
       startSocket(data.session_id);
@@ -773,6 +848,15 @@
         if (payload.debug_metrics_info) {
           statusBox.textContent = payload.debug_metrics_info;
         }
+        if (payload.stream_info) {
+          const m = payload.stream_info;
+          const mission = m.mission_id ? `, миссия ${m.mission_id}` : '';
+          statusBox.textContent = `Потоковая миссия активна${mission}, remote session ${m.remote_session_id || '-'}`;
+        }
+        if (payload.stream_stats) {
+          streamFpsEl.textContent = Number(payload.stream_stats.avg_emit_fps || 0).toFixed(2);
+          streamDroppedEl.textContent = String(Number(payload.stream_stats.frames_dropped || 0));
+        }
 
         if (payload.done) {
           wsTerminal = true;
@@ -803,6 +887,10 @@
             downloadBtn.href = payload.report_url;
             summaryEl.appendChild(document.createElement('br'));
             summaryEl.appendChild(downloadBtn);
+          }
+          if (payload.stream_stats) {
+            streamFpsEl.textContent = Number(payload.stream_stats.avg_emit_fps || 0).toFixed(2);
+            streamDroppedEl.textContent = String(Number(payload.stream_stats.frames_dropped || 0));
           }
           stopBtn.disabled = false;
           if (

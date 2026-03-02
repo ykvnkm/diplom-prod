@@ -1565,7 +1565,19 @@ def save_report(
     return zip_path
 
 
-def start_remote_source(rpi_url: str, source_kind: str, source_value: str, loop_input: bool = False) -> Tuple[str, str, str]:
+def start_remote_source(
+    rpi_url: str,
+    source_kind: str,
+    source_value: str,
+    loop_input: bool = False,
+    mission_id: str = "",
+    realtime: bool = True,
+    target_fps: float | None = None,
+    jitter_ms: int = 0,
+    drop_if_lag: bool = True,
+    max_duration_sec: float | None = None,
+    jpeg_quality: int = 80,
+) -> Tuple[str, str, str, Dict[str, Any]]:
     if not rpi_url:
         raise RuntimeError("Для потокового режима НСУ требуется URL RaspberryPi")
     mode_map = {"video": "file", "rtsp": "rtsp", "frames": "frames"}
@@ -1577,7 +1589,13 @@ def start_remote_source(rpi_url: str, source_kind: str, source_value: str, loop_
         "mode": remote_mode,
         "source": source_value,
         "loop": bool(loop_input),
-        "jpeg_quality": 80,
+        "jpeg_quality": max(10, min(100, int(jpeg_quality))),
+        "mission_id": mission_id,
+        "realtime": bool(realtime),
+        "target_fps": float(target_fps) if target_fps is not None else 0.0,
+        "jitter_ms": max(0, int(jitter_ms)),
+        "drop_if_lag": bool(drop_if_lag),
+        "max_duration_sec": float(max_duration_sec) if max_duration_sec is not None else 0.0,
     }
     base = rpi_url.strip().rstrip("/")
     resp = requests.post(f"{base}/source/start", json=payload, timeout=20)
@@ -1592,7 +1610,7 @@ def start_remote_source(rpi_url: str, source_kind: str, source_value: str, loop_
         absolute_stream = stream_url
     else:
         absolute_stream = f"{base}{stream_url}"
-    return remote_session, absolute_stream, base
+    return remote_session, absolute_stream, base, data
 
 
 def stop_remote_source(rpi_base_url: str, remote_session_id: str):
@@ -1600,6 +1618,18 @@ def stop_remote_source(rpi_base_url: str, remote_session_id: str):
         requests.post(f"{rpi_base_url}/source/stop/{remote_session_id}", timeout=5)
     except Exception:
         pass
+
+
+def fetch_remote_source_stats(rpi_base_url: str, remote_session_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        resp = requests.get(f"{rpi_base_url}/source/session/{remote_session_id}", timeout=2)
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        return None
+    return None
 
 
 def _validate_mode_chain(run_mode: str, nsu_channel: str, source_kind: str):
@@ -1700,6 +1730,7 @@ def run_unified_pipeline(
     mode_label: str,
     debug_evaluator: Optional[YoloDebugEvaluator] = None,
     debug_metrics_info: str = "",
+    remote_stats_getter: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
 ):
     fps_samples: List[float] = []
     person_samples: List[int] = []
@@ -1732,6 +1763,8 @@ def run_unified_pipeline(
 
     force_fixed_height_frames = mode_label.endswith(":frames")
     fixed_height_m = 300.0
+    last_remote_stats_poll = 0.0
+    remote_stats: Optional[Dict[str, Any]] = None
 
     if nav_mode == "marker":
         pos = np.array([0.0, 0.0, 1.5], dtype=float)
@@ -2176,6 +2209,13 @@ def run_unified_pipeline(
                 "t": float(timestamp),
             },
         }
+        if remote_stats_getter is not None:
+            now = time.monotonic()
+            if now - last_remote_stats_poll >= 2.0:
+                last_remote_stats_poll = now
+                remote_stats = remote_stats_getter()
+            if isinstance(remote_stats, dict):
+                payload["stream_stats"] = remote_stats
 
         fps_samples.append(payload["fps"])
         person_samples.append(person_count)
@@ -2237,6 +2277,10 @@ def run_unified_pipeline(
         summary["debug_metrics"] = debug_evaluator.summary()
     else:
         summary["debug_metrics"] = None
+    if remote_stats_getter is not None:
+        final_stats = remote_stats_getter()
+        if isinstance(final_stats, dict):
+            summary["stream_stats"] = final_stats
     on_update(summary)
 
 
@@ -2246,15 +2290,25 @@ def _build_reader(meta: Dict) -> Tuple[object, Optional[Tuple[str, str]]]:
     loop_input = bool(meta.get("loop", False))
 
     if nsu_channel == "stream":
-        remote_session, stream_url, rpi_base = start_remote_source(
+        remote_session, stream_url, rpi_base, remote_meta = start_remote_source(
             meta.get("rpi_url", ""),
             source_kind,
             meta["source"],
             loop_input=loop_input,
+            mission_id=str(meta.get("stream_mission_id", "")).strip(),
+            realtime=bool(meta.get("stream_realtime", True)),
+            target_fps=meta.get("stream_target_fps"),
+            jitter_ms=int(meta.get("stream_jitter_ms", 0) or 0),
+            drop_if_lag=bool(meta.get("stream_drop_if_lag", True)),
+            max_duration_sec=meta.get("stream_max_duration_sec"),
+            jpeg_quality=int(meta.get("stream_jpeg_quality", 80) or 80),
         )
         reader = OpenCVSource(stream_url, "rtsp", loop_input=loop_input)
         if not reader.is_open():
             raise RuntimeError("Не удалось открыть поток с RaspberryPi")
+        if isinstance(remote_meta, dict):
+            meta["stream_mission_id"] = str(remote_meta.get("mission_id", meta.get("stream_mission_id", "")))
+            meta["stream_target_fps"] = float(remote_meta.get("target_fps", meta.get("stream_target_fps") or 0.0))
         return reader, (rpi_base, remote_session)
 
     if source_kind == "frames":
@@ -2588,6 +2642,13 @@ async def start_source(
     annotations_coco: str = Form(""),
     annotations_file: Optional[UploadFile] = File(None),
     debug_preset: str = Form(""),
+    stream_mission_id: str = Form(""),
+    stream_realtime: str = Form("true"),
+    stream_target_fps: str = Form("0"),
+    stream_jitter_ms: str = Form("0"),
+    stream_drop_if_lag: str = Form("true"),
+    stream_max_duration_sec: str = Form("0"),
+    stream_jpeg_quality: str = Form("80"),
 ):
     if source_kind not in {"video", "rtsp", "frames"}:
         raise HTTPException(status_code=400, detail="source_kind должен быть video|rtsp|frames")
@@ -2597,6 +2658,24 @@ async def start_source(
 
     detect_enabled = str(detect).lower() in ("1", "true", "yes", "on")
     save_video_flag = str(save_video).lower() in ("1", "true", "yes", "on")
+    stream_realtime_flag = str(stream_realtime).lower() in ("1", "true", "yes", "on")
+    stream_drop_if_lag_flag = str(stream_drop_if_lag).lower() in ("1", "true", "yes", "on")
+    try:
+        stream_target_fps_val = max(0.0, float(stream_target_fps))
+    except Exception:
+        stream_target_fps_val = 0.0
+    try:
+        stream_jitter_ms_val = max(0, int(float(stream_jitter_ms)))
+    except Exception:
+        stream_jitter_ms_val = 0
+    try:
+        stream_max_duration_sec_val = max(0.0, float(stream_max_duration_sec))
+    except Exception:
+        stream_max_duration_sec_val = 0.0
+    try:
+        stream_jpeg_quality_val = max(10, min(100, int(float(stream_jpeg_quality))))
+    except Exception:
+        stream_jpeg_quality_val = 80
 
     annotations_value = annotations_dir.strip()
     annotations_coco_value = annotations_coco.strip()
@@ -2692,12 +2771,20 @@ async def start_source(
         "remote_link": None,
         "annotations_dir": annotations_value,
         "coco_gt_override": annotations_coco_value if source_kind == "frames" else "",
+        "stream_mission_id": stream_mission_id.strip(),
+        "stream_realtime": stream_realtime_flag,
+        "stream_target_fps": stream_target_fps_val,
+        "stream_jitter_ms": stream_jitter_ms_val,
+        "stream_drop_if_lag": stream_drop_if_lag_flag,
+        "stream_max_duration_sec": stream_max_duration_sec_val,
+        "stream_jpeg_quality": stream_jpeg_quality_val,
     }
     return {
         "session_id": session_id,
         "detect": detect_enabled,
         "mode": source_kind,
         "applied_config": debug_preset_name if source_kind in {"frames", "video", "rtsp"} else "",
+        "stream_mission_id": stream_mission_id.strip(),
     }
 
 
@@ -2805,6 +2892,26 @@ async def ws_process(websocket: WebSocket, session_id: str):
                 return
         reader, remote_link = _build_reader(meta)
         sessions[session_id]["remote_link"] = remote_link
+        remote_stats_getter = None
+        if remote_link:
+            rpi_base, remote_session = remote_link
+
+            def _remote_stats_getter():
+                return fetch_remote_source_stats(rpi_base, remote_session)
+
+            remote_stats_getter = _remote_stats_getter
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "stream_info": {
+                            "remote_session_id": remote_session,
+                            "mission_id": str(meta.get("stream_mission_id", "")),
+                            "target_fps": float(meta.get("stream_target_fps") or 0.0),
+                            "realtime": bool(meta.get("stream_realtime", True)),
+                        }
+                    }
+                )
+            )
         debug_evaluator = None
         debug_metrics_info = ""
         debug_preset_meta = meta.get("debug_preset_meta")
@@ -2867,6 +2974,7 @@ async def ws_process(websocket: WebSocket, session_id: str):
             f"{run_mode}:{nsu_channel}:{source_kind}",
             debug_evaluator,
             debug_metrics_info,
+            remote_stats_getter,
         )
     except WebSocketDisconnect:
         if session_id in sessions:
