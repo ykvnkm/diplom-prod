@@ -1,0 +1,21 @@
+name: nsu_video_yolov8n_fast
+reason: "НСУ local видео: быстрый single-pass профиль для визуального рендера всех кадров."
+model_path: models/yolov8n_baseline_multiscale.pt
+device: cpu
+
+method:
+  name: single
+
+infer:
+  imgsz: 736
+  conf_min: 0.01
+  nms_iou: 0.70
+  max_det: 300
+
+runtime:
+  # No FPS cap: consume frames as fast as inference can run.
+  score_threshold: 0.2
+  frame_stride: 1
+  render_boxes: true
+
+out_dir: runtime/video_fast

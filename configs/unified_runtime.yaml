@@ -1,0 +1,18 @@
+detection_url: http://127.0.0.1:8001
+ui_template_path: services/unified_runtime/templates/unified_navigation_ui.html
+
+mode_flags:
+  enable_nsu: true
+  enable_nsu_local: true
+  enable_nsu_stream: true
+  enable_nsu_local_video: true
+  enable_nsu_local_rtsp: true
+  enable_nsu_local_frames: true
+  enable_nsu_stream_video: true
+  enable_nsu_stream_rtsp: true
+  enable_nsu_stream_frames: true
+  enable_edge: true
+
+debug_presets:
+  nsu_frames_yolov8n_alert_contract: configs/nsu_frames_yolov8n_alert_contract.yaml
+  nsu_video_yolov8n_fast: configs/nsu_video_yolov8n_fast.yaml

@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Rescue Drone Station</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    :root {
+      --bg: #0a0f1f;
+      --panel: #10182b;
+      --panel-2: #0f1a30;
+      --accent: #f97316;
+      --accent-2: #fb923c;
+      --alert: #f97316;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+      --radius: 18px;
+      --outline: rgba(148, 163, 184, 0.15);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 0 24px 32px;
+      background:
+        radial-gradient(circle at 15% 10%, rgba(249,115,22,0.18), transparent 40%),
+        radial-gradient(circle at 85% 0%, rgba(251,146,60,0.16), transparent 42%),
+        linear-gradient(180deg, rgba(15,23,42,0.9), rgba(10,15,31,0.95)),
+        repeating-linear-gradient(90deg, rgba(148,163,184,0.08) 0, rgba(148,163,184,0.08) 1px, transparent 1px, transparent 32px),
+        var(--bg);
+      color: var(--text);
+      font-family: 'IBM Plex Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
+    }
+    header { padding: 28px 0 14px; }
+    h1 { margin: 0 0 6px; font-size: 30px; font-weight: 700; letter-spacing: -0.01em; font-family: 'Space Grotesk', sans-serif; text-align: center; }
+    p.subtitle { display: none; }
+    .layout { display: grid; grid-template-columns: 360px 1fr; gap: 18px; align-items: start; }
+    .card {
+      background: linear-gradient(155deg, rgba(19,28,48,0.95), rgba(12,18,34,0.9));
+      border: 1px solid var(--outline);
+      border-radius: var(--radius);
+      padding: 18px 18px 16px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(6px);
+    }
+    .tab {
+      flex: 1;
+      border: 1px solid rgba(251,146,60,0.25);
+      background: rgba(15,23,42,0.7);
+      color: var(--text);
+      border-radius: 12px;
+      padding: 10px;
+      cursor: pointer;
+      font-weight: 700;
+      font-family: 'Space Grotesk', sans-serif;
+      transition: all 0.15s ease;
+    }
+    .tab.active {
+      border-color: var(--accent);
+      box-shadow: 0 12px 30px rgba(249,115,22,0.25);
+      background: linear-gradient(120deg, rgba(249,115,22,0.2), rgba(12,18,34,0.7));
+    }
+    .card h3 { margin: 0 0 12px; font-size: 15px; font-weight: 700; letter-spacing: 0.01em; }
+    .upload {
+      position: relative;
+      display: block;
+      border: 1px dashed rgba(249,115,22,0.45);
+      border-radius: var(--radius);
+      padding: 18px;
+      text-align: center;
+      cursor: pointer;
+      background: radial-gradient(circle at 50% 10%, rgba(249,115,22,0.2), transparent 50%), rgba(15,23,42,0.6);
+      transition: transform 0.15s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05);
+    }
+    .upload:hover { transform: translateY(-1px); border-color: #fdba74; box-shadow: 0 10px 30px rgba(249,115,22,0.25); }
+    .upload input { display: none; }
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 44px;
+      height: 24px;
+    }
+    .switch input { display:none; }
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(255,255,255,0.18);
+      transition: .2s;
+      border-radius: 24px;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05);
+    }
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 18px; width: 18px;
+      left: 3px; bottom: 3px;
+      background: #0f172a;
+      transition: .2s;
+      border-radius: 50%;
+      box-shadow: 0 6px 15px rgba(0,0,0,0.35);
+    }
+    input:checked + .slider {
+      background: linear-gradient(120deg, var(--accent), #fb923c);
+      box-shadow: 0 10px 30px rgba(249,115,22,0.35);
+    }
+    input:checked + .slider:before {
+      transform: translateX(20px);
+    }
+    .btn {
+      width: 100%;
+      border: none;
+      border-radius: 12px;
+      padding: 12px 14px;
+      background: linear-gradient(120deg, var(--accent), #fb923c);
+      color: #07121e;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.15s ease, box-shadow 0.2s ease;
+      box-shadow: 0 12px 30px rgba(249,115,22,0.45);
+    }
+    .btn:hover { transform: translateY(-1px); }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .chip {
+      padding: 10px 12px;
+      background: rgba(15,23,42,0.8);
+      border-radius: 12px;
+      border: 1px solid rgba(148,163,184,0.12);
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .chip strong { color: var(--text); }
+    .live-grid {
+      display: grid;
+      grid-template-columns: 1.4fr 1fr;
+      gap: 16px;
+    }
+    .pane {
+      background: linear-gradient(145deg, rgba(16,24,43,0.9), rgba(12,18,34,0.85));
+      border: 1px solid rgba(148,163,184,0.16);
+      border-radius: var(--radius);
+      padding: 14px;
+      box-shadow: var(--shadow);
+      height: 100%;
+    }
+    .pane h4 { margin: 0 0 8px; font-size: 14px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    .pane img { width: 100%; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05); }
+    .plots { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 8px; }
+    #status { margin-top: 8px; color: var(--muted); min-height: 22px; }
+    .summary { margin-top: 10px; padding: 10px 12px; border-radius: 12px; background: rgba(34,197,94,0.12); border: 1px solid rgba(34,197,94,0.25); color: #bbf7d0; display: none; }
+    canvas, .plotly-graph-div { width: 100% !important; height: 300px !important; }
+    @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } .live-grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>RescueAI</h1>
+  </header>
+  <div class="layout">
+    <div class="card">
+      <div style="display:flex; gap:8px; margin-bottom:12px;">
+        <button id="tab-file" class="tab active">Видео файл</button>
+        <button id="tab-rtsp" class="tab">RTSP поток</button>
+      </div>
+
+      <div id="panel-file">
+        <h3>Загрузка видео</h3>
+        <form id="upload-form">
+          <label class="upload">
+            <input type="file" id="file-input" name="file" accept="video/*" required />
+            <div>Перетащите или выберите видео</div>
+            <small style="color: var(--muted);">Поддерживаются mp4/mov/avi</small>
+          </label>
+      <div style="display:flex; align-items:center; gap:10px; margin:10px 0 4px;">
+        <label class="switch">
+          <input type="checkbox" id="detect-toggle" checked />
+          <span class="slider"></span>
+        </label>
+        <div>
+          <div style="font-weight:700; font-size:13px;">Детекция людей</div>
+          <div style="color:var(--muted); font-size:12px;">Отключите, если нужна только траектория</div>
+        </div>
+      </div>
+      <div style="display:flex; gap:10px; margin:10px 0;">
+        <div style="flex:1;">
+          <label style="color:var(--muted); font-size:12px;">Устройство теста</label>
+          <select id="device-file" style="width:100%; padding:10px; border-radius:10px; background:rgba(0,0,0,0.25); color:var(--text); border:1px solid rgba(255,255,255,0.15);">
+            <option>CPU</option>
+            <option>RaspberryPi 4B</option>
+          </select>
+        </div>
+        <div style="flex:1;">
+          <label style="color:var(--muted); font-size:12px;">Модель детекции</label>
+          <select id="model-file" style="width:100%; padding:10px; border-radius:10px; background:rgba(0,0,0,0.25); color:var(--text); border:1px solid rgba(255,255,255,0.15);">
+            <option value="yolo">YOLO12n</option>
+            <option value="fasterrcnn">FasterRCNN</option>
+            <option value="ssdlite">SSDLite320</option>
+            <option value="ssd300">SSD300 VGG16</option>
+            <option value="efficientdet_v0">EfficientDet v0</option>
+            <option value="efficientdet_v1">EfficientDet v1</option>
+            <option value="efficientdet_v2">EfficientDet v2</option>
+            <option value="nanodet15">NanoDet Plus 1.5x</option>
+            <option value="nanodet15_onnx">NanoDet Plus 1.5x (ONNX)</option>
+            <option value="detr">DETR ResNet50</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin:10px 0;">
+        <label style="color:var(--muted); font-size:12px;">Навигация</label>
+        <select id="marker-mode-file" style="width:100%; padding:10px; border-radius:10px; background:rgba(0,0,0,0.25); color:var(--text); border:1px solid rgba(255,255,255,0.15); display:none;">
+          <option value="auto" selected>Авто (искать маркер при взлёте)</option>
+          <option value="marker">Маркер при взлёте (текущий алгоритм)</option>
+          <option value="no_marker">Без маркера (ORB, пиксели)</option>
+        </select>
+      </div>
+      <div style="display:flex; gap:10px; margin:10px 0;">
+        <div style="flex:1;">
+          <label style="color:var(--muted); font-size:12px;">Сохранить видео с детекцией</label>
+          <label class="switch" style="display:inline-block; vertical-align:middle; margin-left:8px;">
+            <input type="checkbox" id="save-video-file" />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div style="flex:1;"></div>
+      </div>
+          <div style="margin-top: 12px;">
+            <button class="btn" type="submit">Старт обработки</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="panel-rtsp" style="display:none;">
+        <h3>RTSP поток</h3>
+        <form id="rtsp-form">
+          <div style="margin-bottom:12px;">
+            <label style="display:block; color:var(--muted); font-size:13px; margin-bottom:6px;">RTSP URL (введите вручную) или путь к файлу</label>
+            <input type="text" id="rtsp-url" name="rtsp_url" placeholder="rtsp://127.0.0.1:8554/live" style="width:100%; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.3); color:var(--text); font-weight:600;" />
+            <small style="color:var(--muted); line-height:1.4;">Запустите свой зацикленный RTSP поток (ffmpeg/mediamtx) и вставьте URL. Можно указать путь к локальному файлу (например <code>test_videos/test_1.mp4</code>).</small>
+          </div>
+      <div style="display:flex; align-items:center; gap:10px; margin:10px 0 4px;">
+        <label class="switch">
+          <input type="checkbox" id="detect-toggle-rtsp" checked />
+          <span class="slider"></span>
+        </label>
+        <div>
+          <div style="font-weight:700; font-size:13px;">Детекция людей</div>
+          <div style="color:var(--muted); font-size:12px;">Можно отключить для экономии ресурсов</div>
+        </div>
+      </div>
+      <div style="display:flex; gap:10px; margin:10px 0;">
+        <div style="flex:1;">
+          <label style="color:var(--muted); font-size:12px;">Устройство теста</label>
+          <select id="device-rtsp" style="width:100%; padding:10px; border-radius:10px; background:rgba(0,0,0,0.25); color:var(--text); border:1px solid rgba(255,255,255,0.15);">
+            <option>CPU</option>
+            <option>RaspberryPi 4B</option>
+          </select>
+        </div>
+        <div style="flex:1;">
+          <label style="color:var(--muted); font-size:12px;">Модель детекции</label>
+          <select id="model-rtsp" style="width:100%; padding:10px; border-radius:10px; background:rgba(0,0,0,0.25); color:var(--text); border:1px solid rgba(255,255,255,0.15);">
+            <option value="yolo">YOLO12n</option>
+            <option value="fasterrcnn">FasterRCNN (baseline)</option>
+            <option value="ssdlite">SSDLite320 (COCO, default)</option>
+            <option value="ssd300">SSD300 VGG16 (COCO, default)</option>
+            <option value="efficientdet_v0">EfficientDet v0 (COCO, default)</option>
+            <option value="efficientdet_v1">EfficientDet v1 (COCO, default)</option>
+            <option value="efficientdet_v2">EfficientDet v2 (COCO, default)</option>
+            <option value="nanodet15">NanoDet Plus 1.5x (COCO)</option>
+            <option value="nanodet15_onnx">NanoDet Plus 1.5x (ONNX)</option>
+            <option value="detr">DETR ResNet50 (COCO)</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin:10px 0;">
+        <label style="color:var(--muted); font-size:12px;">Навигация</label>
+        <select id="marker-mode-rtsp" style="width:100%; padding:10px; border-radius:10px; background:rgba(0,0,0,0.25); color:var(--text); border:1px solid rgba(255,255,255,0.15); display:none;">
+          <option value="auto" selected>Авто (искать маркер при взлёте)</option>
+          <option value="marker">Маркер при взлёте (текущий алгоритм)</option>
+          <option value="no_marker">Без маркера (ORB, пиксели)</option>
+        </select>
+      </div>
+      <div style="display:flex; gap:10px; margin:10px 0;">
+        <div style="flex:1;">
+          <label style="color:var(--muted); font-size:12px;">Сохранить видео с детекцией</label>
+          <label class="switch" style="display:inline-block; vertical-align:middle; margin-left:8px;">
+            <input type="checkbox" id="save-video-rtsp" />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div style="flex:1;"></div>
+      </div>
+          <div style="margin-top: 12px;">
+            <button class="btn" type="submit">Старт RTSP</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="status">Ожидаю загрузку...</div>
+      <div style="margin-top:8px;">
+        <button id="btn-stop" class="btn" style="background:linear-gradient(120deg,#f43f5e,#fb7185); box-shadow:0 12px 30px rgba(244,63,94,0.35);">Стоп и сохранить отчет</button>
+      </div>
+      <div class="stats">
+        <div class="chip">Текущий FPS: <strong id="fps">-</strong></div>
+        <div class="chip">Людей в кадре: <strong id="persons">-</strong></div>
+        <div class="chip">Средний FPS: <strong id="avg-fps">-</strong></div>
+        <div class="chip">Кадров обработано: <strong id="frames-total">-</strong></div>
+        <div class="chip" style="grid-column: span 2;">Текущая высота: <strong id="height-now">-</strong> м</div>
+      </div>
+      <div class="summary" id="summary"></div>
+    </div>
+    <div class="live-grid">
+      <div class="pane">
+        <h4>Видео + боксы</h4>
+        <img id="frame" alt="frame" />
+      </div>
+      <div class="pane">
+        <h4>Траектория 3D</h4>
+        <div id="chart-3d"></div>
+      </div>
+      <div class="pane">
+        <h4>Top-down XY</h4>
+        <div id="chart-xy"></div>
+      </div>
+      <div class="pane">
+        <h4>Высота Z(t)</h4>
+        <div id="chart-height"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const statusBox = document.getElementById('status');
+    const fpsEl = document.getElementById('fps');
+    const personsEl = document.getElementById('persons');
+    const avgFpsEl = document.getElementById('avg-fps');
+    const framesTotalEl = document.getElementById('frames-total');
+    const heightNowEl = document.getElementById('height-now');
+    const summaryEl = document.getElementById('summary');
+    const frameEl = document.getElementById('frame');
+    const stopBtn = document.getElementById('btn-stop');
+    const deviceFile = document.getElementById('device-file');
+    const deviceRtsp = document.getElementById('device-rtsp');
+    const saveVideoFile = document.getElementById('save-video-file');
+    const saveVideoRtsp = document.getElementById('save-video-rtsp');
+    const modelFile = document.getElementById('model-file');
+    const modelRtsp = document.getElementById('model-rtsp');
+    const markerModeFile = document.getElementById('marker-mode-file');
+    const markerModeRtsp = document.getElementById('marker-mode-rtsp');
+    const downloadBtn = document.createElement('a');
+    downloadBtn.textContent = 'Скачать отчет о полёте (ZIP)';
+    downloadBtn.style.display = 'inline-block';
+    downloadBtn.style.marginTop = '10px';
+    downloadBtn.style.padding = '10px 12px';
+    downloadBtn.style.borderRadius = '10px';
+    downloadBtn.style.background = 'linear-gradient(120deg, #f97316, #fbbf24)';
+    downloadBtn.style.color = '#1f1306';
+    downloadBtn.style.fontWeight = '800';
+    downloadBtn.style.textDecoration = 'none';
+    downloadBtn.style.boxShadow = '0 10px 28px rgba(249,115,22,0.35)';
+    downloadBtn.style.transition = 'transform 0.15s ease, box-shadow 0.2s ease';
+    downloadBtn.onmouseenter = () => {
+      downloadBtn.style.transform = 'translateY(-1px)';
+      downloadBtn.style.boxShadow = '0 14px 32px rgba(249,115,22,0.45)';
+    };
+    downloadBtn.onmouseleave = () => {
+      downloadBtn.style.transform = 'translateY(0)';
+      downloadBtn.style.boxShadow = '0 10px 28px rgba(249,115,22,0.35)';
+    };
+
+    const xs = [], ys = [], zs = [], ts = [];
+    let ws = null;
+    let currentSession = null;
+    const tabFile = document.getElementById('tab-file');
+    const tabRtsp = document.getElementById('tab-rtsp');
+    const panelFile = document.getElementById('panel-file');
+    const panelRtsp = document.getElementById('panel-rtsp');
+    const rtspInput = document.getElementById('rtsp-url');
+    stopBtn.disabled = true;
+
+    // Вкладки
+    function activateTab(which) {
+      if (which === 'file') {
+        tabFile.classList.add('active'); tabRtsp.classList.remove('active');
+        panelFile.style.display = 'block'; panelRtsp.style.display = 'none';
+        statusBox.textContent = 'Ожидаю загрузку...';
+      } else {
+        tabRtsp.classList.add('active'); tabFile.classList.remove('active');
+        panelRtsp.style.display = 'block'; panelFile.style.display = 'none';
+        statusBox.textContent = 'Ожидаю запуск RTSP...';
+      }
+    }
+    tabFile.onclick = () => activateTab('file');
+    tabRtsp.onclick = () => activateTab('rtsp');
+
+    // Init Plotly charts with reusable layouts
+    const layoutHeight = {
+      margin: { t: 20, r: 10, l: 40, b: 40 },
+      paper_bgcolor: 'rgba(0,0,0,0)',
+      plot_bgcolor: 'rgba(255,255,255,0.015)',
+      xaxis: { title: 't (s)', color: '#94a3b8', gridcolor: 'rgba(255,255,255,0.05)' },
+      yaxis: { title: 'Z (m)', color: '#94a3b8', gridcolor: 'rgba(255,255,255,0.05)' },
+      showlegend: false,
+    };
+    const layoutXY = {
+      margin: { t: 20, r: 10, l: 40, b: 40 },
+      paper_bgcolor: 'rgba(0,0,0,0)',
+      plot_bgcolor: 'rgba(255,255,255,0.015)',
+      xaxis: { title: 'X (m)', color: '#94a3b8', gridcolor: 'rgba(255,255,255,0.05)' },
+      yaxis: { title: 'Y (m)', color: '#94a3b8', scaleanchor: 'x', scaleratio: 1, gridcolor: 'rgba(255,255,255,0.05)' },
+      showlegend: false,
+    };
+    const layout3d = {
+      margin: { t: 10, r: 10, l: 10, b: 10 },
+      paper_bgcolor: 'rgba(0,0,0,0)',
+      scene: {
+        xaxis: { title: 'X', color: '#94a3b8', showgrid: true, gridcolor: '#1b2233', gridwidth: 1, zerolinecolor: '#1f2739' },
+        yaxis: { title: 'Y', color: '#94a3b8', showgrid: true, gridcolor: '#1b2233', gridwidth: 1, zerolinecolor: '#1f2739' },
+        zaxis: { title: 'Z', color: '#94a3b8', showgrid: true, gridcolor: '#1b2233', gridwidth: 1, zerolinecolor: '#1f2739' },
+        bgcolor: 'rgba(0,0,0,0)',
+        showbackground: false,
+      },
+      showlegend: false,
+    };
+
+    Plotly.newPlot('chart-height',
+      [{ x: [], y: [], mode: 'lines', line: { color: '#22c55e', width: 4 }, name: '' }],
+      layoutHeight,
+      { displaylogo: false }
+    );
+
+    Plotly.newPlot('chart-xy',
+      [
+        { x: [], y: [], mode: 'lines', line: { color: '#38bdf8', width: 4 }, name: '' },
+        { x: [], y: [], mode: 'markers', marker: { size: 10, color: '#38bdf8' }, name: '' }
+      ],
+      layoutXY,
+      { displaylogo: false }
+    );
+
+    Plotly.newPlot('chart-3d',
+      [
+        { x: [], y: [], z: [], type: 'scatter3d', mode: 'lines', line: { color: '#a855f7', width: 8 }, name: '' },
+        { x: [], y: [], z: [], type: 'scatter3d', mode: 'markers', marker: { size: 6, color: '#f472b6' }, name: '' }
+      ],
+      layout3d,
+      { displaylogo: false }
+    );
+
+    document.getElementById('upload-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const file = document.getElementById('file-input').files[0];
+      if (!file) return;
+      statusBox.textContent = 'Загружаю видео...';
+      summaryEl.style.display = 'none';
+      const fd = new FormData();
+      fd.append('file', file);
+      const detectEnabled = document.getElementById('detect-toggle').checked;
+      fd.append('detect', detectEnabled ? 'true' : 'false');
+      fd.append('device', deviceFile.value);
+      fd.append('save_video', saveVideoFile.checked ? 'true' : 'false');
+      fd.append('model', modelFile.value);
+      fd.append('marker_mode', markerModeFile.value);
+      const res = await fetch('/upload', { method: 'POST', body: fd });
+      if (!res.ok) {
+        statusBox.textContent = 'Ошибка загрузки';
+        return;
+      }
+      const data = await res.json();
+      statusBox.textContent = `Видео получено, детекция ${data.detect ? 'включена' : 'отключена'}. Запускаю обработку...`;
+      xs.length = ys.length = zs.length = ts.length = 0;
+      fpsEl.textContent = '-'; personsEl.textContent = '-'; avgFpsEl.textContent = '-'; framesTotalEl.textContent = '-';
+      startSocket(data.session_id);
+      stopBtn.disabled = false;
+    });
+
+    document.getElementById('rtsp-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const url = document.getElementById('rtsp-url').value.trim();
+      if (!url) {
+        statusBox.textContent = 'Введите RTSP url или путь к файлу';
+        return;
+      }
+      summaryEl.style.display = 'none';
+      const fd = new FormData();
+      fd.append('rtsp_url', url);
+      const detectEnabled = document.getElementById('detect-toggle-rtsp').checked;
+      fd.append('detect', detectEnabled ? 'true' : 'false');
+      fd.append('device', deviceRtsp.value);
+      fd.append('save_video', saveVideoRtsp.checked ? 'true' : 'false');
+      fd.append('model', modelRtsp.value);
+      fd.append('marker_mode', markerModeRtsp.value);
+      statusBox.textContent = 'Запускаю RTSP поток: ' + url;
+      const res = await fetch('/start_rtsp', { method: 'POST', body: fd });
+      if (!res.ok) {
+        statusBox.textContent = 'Ошибка запуска RTSP';
+        return;
+      }
+      const data = await res.json();
+      statusBox.textContent = `Источник получен (${data.mode || 'rtsp'}), детекция ${data.detect ? 'включена' : 'отключена'}.`;
+      xs.length = ys.length = zs.length = ts.length = 0;
+      fpsEl.textContent = '-'; personsEl.textContent = '-'; avgFpsEl.textContent = '-'; framesTotalEl.textContent = '-';
+      startSocket(data.session_id);
+      stopBtn.disabled = false;
+    });
+
+    stopBtn.onclick = async () => {
+      if (!currentSession) {
+        statusBox.textContent = 'Нет активной сессии для остановки.';
+        return;
+      }
+      stopBtn.disabled = true;
+      statusBox.textContent = 'Останавливаю обработку...';
+      try {
+        await fetch(`/stop/${currentSession}`, { method: 'POST' });
+      } catch (e) {
+        statusBox.textContent = 'Ошибка остановки';
+      }
+    };
+
+    function startSocket(sessionId) {
+      if (ws) { ws.close(); }
+      currentSession = sessionId;
+      ws = new WebSocket(`ws://${location.host}/ws/process/${sessionId}`);
+      ws.onopen = () => statusBox.textContent = 'Обработка запущена...';
+      ws.onclose = () => { statusBox.textContent = 'Сессия завершена'; stopBtn.disabled = true; currentSession = null; };
+      ws.onerror = () => statusBox.textContent = 'Ошибка WebSocket';
+      ws.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        if (payload.error) {
+          statusBox.textContent = payload.error;
+          return;
+        }
+
+        if (payload.done) {
+          if (payload.avg_fps !== undefined) avgFpsEl.textContent = payload.avg_fps.toFixed(1);
+          if (payload.frames_total !== undefined) framesTotalEl.textContent = payload.frames_total;
+          const duration = payload.duration_sec ? payload.duration_sec.toFixed(1) : '-';
+          summaryEl.textContent = `Готово: кадров ${payload.frames_total || '-'}, средний FPS ${payload.avg_fps?.toFixed(1) || '-'}, длительность ${duration} с, среднее людей ${payload.avg_person_count?.toFixed(1) || '-'}`;
+          summaryEl.style.display = 'block';
+          if (payload.report_url) {
+            downloadBtn.href = payload.report_url;
+            summaryEl.appendChild(document.createElement('br'));
+            summaryEl.appendChild(downloadBtn);
+          }
+          stopBtn.disabled = false;
+          return;
+        }
+
+        if (payload.fps !== undefined) fpsEl.textContent = payload.fps.toFixed(1);
+        if (payload.person_count !== undefined) personsEl.textContent = payload.person_count;
+        if (payload.frame) frameEl.src = payload.frame;
+        if (payload.point && payload.point.z !== undefined) heightNowEl.textContent = payload.point.z.toFixed(2);
+
+        if (payload.point) {
+          xs.push(payload.point.x);
+          ys.push(payload.point.y);
+          zs.push(payload.point.z);
+          ts.push(payload.point.t);
+
+          Plotly.update('chart-height', { x: [ts], y: [zs] }, {}, [0]);
+
+          const lastX = xs.length ? [xs[xs.length - 1]] : [];
+          const lastY = ys.length ? [ys[ys.length - 1]] : [];
+          Plotly.update('chart-xy',
+            { x: [xs, lastX], y: [ys, lastY] },
+            {},
+            [0, 1]
+          );
+
+          const lastZ = zs.length ? [zs[zs.length - 1]] : [];
+          Plotly.update('chart-3d',
+            { x: [xs, lastX], y: [ys, lastY], z: [zs, lastZ] },
+            {},
+            [0, 1]
+          );
+        }
+      };
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+# Минимальный конфиг детекционного сервиса для unified runtime:
+# 1) YOLOv8n Baseline Multiscale (видео и поток кадров)
+# 2) NanoDet Plus 1.5x (видео)
+
+default_conf_thresholds:
+  yolov8n_baseline_multiscale: 0.02
+  yolo: 0.02
+  nanodet: 0.35
+  nanodet15: 0.35
+  nanodet15_onnx: 0.35
+
+model_aliases:
+  yolo12: yolov8n_baseline_multiscale
+  nanodet: nanodet15
+  nanodet_onnx: nanodet15_onnx
+
+yolo_weights:
+  yolo: models/yolov8n_baseline_multiscale.pt
+  yolov8n_baseline_multiscale: models/yolov8n_baseline_multiscale.pt

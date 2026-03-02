@@ -1,0 +1,17 @@
+fastapi==0.115.8
+uvicorn[standard]==0.34.0
+python-multipart==0.0.18
+numpy==2.2.6
+opencv-python-headless==4.12.0.88
+matplotlib==3.10.7
+requests==2.32.5
+PyYAML==6.0.3
+torch==2.9.1
+torchvision==0.24.1
+ultralytics==8.3.228
+onnx==1.20.1
+onnxruntime==1.23.2
+addict==2.4.0
+termcolor==3.2.0
+pycocotools==2.0.10
+tqdm==4.67.1

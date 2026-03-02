@@ -1,0 +1,19 @@
+*
+
+!Dockerfile
+!docker-compose.unified.yml
+!.dockerignore
+
+!services/**
+!configs/**
+!nanodet/**
+!scripts/docker/**
+!docker/unified-runtime/requirements.txt
+
+# keep git metadata out of build context
+.git
+.git/**
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
