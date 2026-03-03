@@ -9,6 +9,7 @@ import os
 import time
 import uuid
 import zipfile
+import urllib.parse
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -92,6 +93,21 @@ CONFIG_PATH = Path("configs/unified_runtime.yaml")
 UI_TEMPLATE_PATH = Path("services/unified_runtime/templates/unified_navigation_ui.html")
 NSU_LOCAL_FRAMES_DIR = Path(os.getenv("NSU_LOCAL_FRAMES_DIR", "public/images"))
 NSU_LOCAL_VIDEO_PRESET = "nsu_video_yolov8n_fast"
+STREAM_UI_MAX_FPS = float(os.getenv("STREAM_UI_MAX_FPS", "8.0"))
+STREAM_UI_JPEG_QUALITY = int(os.getenv("STREAM_UI_JPEG_QUALITY", "55"))
+STREAM_UI_MAX_WIDTH = int(os.getenv("STREAM_UI_MAX_WIDTH", "640"))
+STREAM_PLOT_EVERY_N = int(os.getenv("STREAM_PLOT_EVERY_N", "30"))
+STREAM_UI_EMIT_STRIDE = max(1, int(os.getenv("STREAM_UI_EMIT_STRIDE", "2")))
+STREAM_VIDEO_TARGET_FPS = float(os.getenv("STREAM_VIDEO_TARGET_FPS", "10.0"))
+STREAM_RPI_JPEG_QUALITY = int(os.getenv("STREAM_RPI_JPEG_QUALITY", "65"))
+STREAM_VIDEO_DETECTION_STRIDE = max(1, int(os.getenv("STREAM_VIDEO_DETECTION_STRIDE", "3")))
+STREAM_DET_MAX_WIDTH = max(320, int(os.getenv("STREAM_DET_MAX_WIDTH", "512")))
+STREAM_DET_IMGSZ = max(320, int(os.getenv("STREAM_DET_IMGSZ", "416")))
+STREAM_DET_MAX_DET = max(1, int(os.getenv("STREAM_DET_MAX_DET", "120")))
+STREAM_USE_RAW_VIDEO = str(os.getenv("STREAM_USE_RAW_VIDEO", "1")).strip().lower() in ("1", "true", "yes", "on")
+STREAM_PREFER_RTSP = str(os.getenv("STREAM_PREFER_RTSP", "1")).strip().lower() in ("1", "true", "yes", "on")
+STREAM_NAV_WIDTH = max(320, int(os.getenv("STREAM_NAV_WIDTH", "640")))
+STREAM_NAV_HEIGHT = max(240, int(os.getenv("STREAM_NAV_HEIGHT", "360")))
 
 ALLOWED_NSU_MODELS = {
     "yolov8n_baseline_multiscale": "yolov8n_baseline_multiscale",
@@ -107,11 +123,46 @@ DEBUG_PRESET_PATHS = {
 class SourceProfile:
     detection_stride: int
     emit_only_detections: bool
+    emit_stride: int = 1
+    emit_max_fps: Optional[float] = None
+    ui_jpeg_quality: int = 80
+    ui_max_width: Optional[int] = None
+    force_marker_mode: Optional[str] = None
+    plot_every_n_frames: int = 10
+    detect_max_width: Optional[int] = None
+    nav_width: Optional[int] = None
+    nav_height: Optional[int] = None
 
 
 def source_profile(kind: str, run_mode: str = "nsu", nsu_channel: str = "local", detect_enabled: bool = True) -> SourceProfile:
-    if run_mode == "nsu" and nsu_channel == "stream" and kind in {"video", "frames"}:
-        return SourceProfile(detection_stride=3, emit_only_detections=bool(detect_enabled))
+    if run_mode == "nsu" and nsu_channel == "stream" and kind == "video":
+        return SourceProfile(
+            detection_stride=max(STREAM_VIDEO_DETECTION_STRIDE, 3),
+            emit_only_detections=bool(detect_enabled),
+            emit_stride=STREAM_UI_EMIT_STRIDE,
+            emit_max_fps=STREAM_UI_MAX_FPS,
+            ui_jpeg_quality=STREAM_UI_JPEG_QUALITY,
+            ui_max_width=STREAM_UI_MAX_WIDTH,
+            force_marker_mode="no_marker" if detect_enabled else "marker",
+            plot_every_n_frames=STREAM_PLOT_EVERY_N,
+            detect_max_width=STREAM_DET_MAX_WIDTH,
+            nav_width=STREAM_NAV_WIDTH,
+            nav_height=STREAM_NAV_HEIGHT,
+        )
+    if run_mode == "nsu" and nsu_channel == "stream" and kind == "rtsp":
+        return SourceProfile(
+            detection_stride=3,
+            emit_only_detections=bool(detect_enabled),
+            emit_stride=STREAM_UI_EMIT_STRIDE,
+            emit_max_fps=STREAM_UI_MAX_FPS,
+            ui_jpeg_quality=STREAM_UI_JPEG_QUALITY,
+            ui_max_width=STREAM_UI_MAX_WIDTH,
+            force_marker_mode="no_marker" if detect_enabled else "marker",
+            plot_every_n_frames=STREAM_PLOT_EVERY_N,
+            detect_max_width=STREAM_DET_MAX_WIDTH,
+            nav_width=STREAM_NAV_WIDTH,
+            nav_height=STREAM_NAV_HEIGHT,
+        )
     if kind == "rtsp":
         return SourceProfile(detection_stride=3, emit_only_detections=True)
     if kind == "frames":
@@ -140,6 +191,7 @@ class DetectionClient:
         conf: float | None = None,
         iou: float | None = None,
         max_det: int | None = None,
+        imgsz: int | None = None,
     ):
         ok, buf = cv2.imencode(".jpg", frame_bgr)
         if not ok:
@@ -152,6 +204,8 @@ class DetectionClient:
                 payload["iou"] = str(iou)
             if max_det is not None:
                 payload["max_det"] = str(max_det)
+            if imgsz is not None:
+                payload["imgsz"] = str(int(imgsz))
             resp = requests.post(
                 f"{self.base_url}/detect",
                 files={"file": ("frame.jpg", buf.tobytes(), "image/jpeg")},
@@ -298,9 +352,22 @@ class OpenCVSource:
         self.mode = mode
         self.loop_input = loop_input
         self.cap = cv2.VideoCapture(str(source))
+        self._prefetched_frame: Optional[np.ndarray] = None
+        # Для HTTP file-stream сразу проверяем, что читается первый кадр.
+        # Иначе откатимся на альтернативный источник выше по стеку.
+        src_l = str(source).lower()
+        if mode == "file" and (src_l.startswith("http://") or src_l.startswith("https://")):
+            if not self.cap or not self.cap.isOpened():
+                return
+            ok, frame = self.cap.read()
+            if not ok or frame is None:
+                self.cap.release()
+                self.cap = None
+            else:
+                self._prefetched_frame = frame
 
     def is_open(self) -> bool:
-        return self.cap.isOpened()
+        return self.cap is not None and self.cap.isOpened()
 
     def fps(self) -> float:
         if not self.cap or not self.cap.isOpened():
@@ -309,6 +376,10 @@ class OpenCVSource:
         return fps if fps > 1e-3 else 30.0
 
     def read(self):
+        if self._prefetched_frame is not None:
+            frame = self._prefetched_frame
+            self._prefetched_frame = None
+            return True, frame
         if not self.cap or not self.cap.isOpened():
             return False, None
         ok, frame = self.cap.read()
@@ -333,6 +404,80 @@ class OpenCVSource:
     def close(self):
         if self.cap is not None:
             self.cap.release()
+
+
+class MjpegHTTPSource:
+    def __init__(self, url: str, target_fps: float = 30.0):
+        self.url = str(url)
+        self._target_fps = float(target_fps) if float(target_fps) > 0 else 30.0
+        self._resp = None
+        self._iter = None
+        self._buf = bytearray()
+        self._open = False
+        try:
+            self._resp = requests.get(self.url, stream=True, timeout=(5, 30))
+            self._resp.raise_for_status()
+            self._iter = self._resp.iter_content(chunk_size=64 * 1024)
+            self._open = True
+        except Exception:
+            self._open = False
+            if self._resp is not None:
+                try:
+                    self._resp.close()
+                except Exception:
+                    pass
+                self._resp = None
+            self._iter = None
+
+    def is_open(self) -> bool:
+        return bool(self._open and self._iter is not None)
+
+    def fps(self) -> float:
+        return self._target_fps
+
+    def _decode_next_frame(self) -> Optional[np.ndarray]:
+        if self._iter is None:
+            return None
+        for chunk in self._iter:
+            if not chunk:
+                continue
+            self._buf.extend(chunk)
+            start = self._buf.find(b"\xff\xd8")
+            end = self._buf.find(b"\xff\xd9", start + 2 if start >= 0 else 0)
+            if start >= 0 and end > start:
+                jpg = bytes(self._buf[start : end + 2])
+                del self._buf[: end + 2]
+                frame = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+                if frame is not None:
+                    return frame
+            if len(self._buf) > 8 * 1024 * 1024:
+                # Защита от разрастания буфера при поврежденном потоке.
+                del self._buf[:-1024]
+        return None
+
+    def read(self):
+        if not self.is_open():
+            return False, None
+        try:
+            frame = self._decode_next_frame()
+        except Exception:
+            self._open = False
+            return False, None
+        if frame is None:
+            self._open = False
+            return False, None
+        return True, frame
+
+    def close(self):
+        self._open = False
+        if self._resp is not None:
+            try:
+                self._resp.close()
+            except Exception:
+                pass
+            self._resp = None
+        self._iter = None
+        self._buf.clear()
 
 
 class FolderSource:
@@ -1441,8 +1586,25 @@ def _scale_detections_xyxy(detections: List[Dict], src_shape: Tuple[int, int], d
     return out
 
 
-def encode_image_b64(img: np.ndarray) -> str:
-    ok, buf = cv2.imencode(".jpg", img)
+def _resize_for_detection(frame: np.ndarray, max_width: Optional[int]) -> np.ndarray:
+    if max_width is None or max_width <= 0:
+        return frame
+    h, w = frame.shape[:2]
+    if w <= max_width:
+        return frame
+    scale = float(max_width) / float(w)
+    new_h = max(1, int(round(h * scale)))
+    return cv2.resize(frame, (int(max_width), new_h))
+
+
+def encode_image_b64(img: np.ndarray, jpeg_quality: int = 80, max_width: Optional[int] = None) -> str:
+    frame = img
+    if max_width is not None and max_width > 0 and frame.shape[1] > max_width:
+        scale = float(max_width) / float(frame.shape[1])
+        h = max(1, int(round(frame.shape[0] * scale)))
+        frame = cv2.resize(frame, (int(max_width), h))
+    quality = max(10, min(100, int(jpeg_quality)))
+    ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
     if not ok:
         return ""
     return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode("utf-8")
@@ -1608,13 +1770,16 @@ def start_remote_source(
     data = resp.json()
     remote_session = data.get("session_id")
     stream_url = data.get("stream_url")
-    if not remote_session or not stream_url:
+    rtsp_url = str(data.get("rtsp_url", "") or "").strip()
+    backend = str(data.get("backend", "") or "").strip().lower()
+    selected_stream = rtsp_url if (STREAM_PREFER_RTSP and rtsp_url and backend == "rtsp") else stream_url
+    if not remote_session or not selected_stream:
         raise RuntimeError("RPi source service вернул неполный ответ")
 
-    if stream_url.startswith("http://") or stream_url.startswith("https://"):
-        absolute_stream = stream_url
+    if selected_stream.startswith("http://") or selected_stream.startswith("https://") or selected_stream.startswith("rtsp://"):
+        absolute_stream = selected_stream
     else:
-        absolute_stream = f"{base}{stream_url}"
+        absolute_stream = f"{base}{selected_stream}"
     return remote_session, absolute_stream, base, data
 
 
@@ -1654,6 +1819,20 @@ def fetch_remote_catalog(rpi_base_url: str) -> Dict[str, Any]:
     return payload
 
 
+def fetch_remote_file_to_local(rpi_base_url: str, remote_path: str, local_path: Path) -> Path:
+    if not remote_path:
+        raise RuntimeError("remote_path пустой")
+    url = f"{rpi_base_url.rstrip('/')}/source/raw_file?path={urllib.parse.quote(str(remote_path), safe='/')}"
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    with requests.get(url, stream=True, timeout=20) as resp:
+        resp.raise_for_status()
+        with local_path.open("wb") as fd:
+            for chunk in resp.iter_content(chunk_size=512 * 1024):
+                if chunk:
+                    fd.write(chunk)
+    return local_path
+
+
 def _validate_mode_chain(run_mode: str, nsu_channel: str, source_kind: str):
     if run_mode == "edge":
         if not is_enabled("enable_edge"):
@@ -1690,6 +1869,15 @@ def _resolve_detector(model_ui: str) -> str:
         allowed = ", ".join(sorted(ALLOWED_NSU_MODELS.keys()))
         raise HTTPException(status_code=400, detail=f"Недопустимая модель для НСУ режима. Разрешено: {allowed}")
     return mapped
+
+
+def _resolve_stream_detector(model_ui: str) -> str:
+    normalized = str(model_ui).strip().lower()
+    if normalized == "nanodet":
+        return "nanodet15_onnx"
+    if normalized in {"yolov8n_baseline_multiscale", "yolo"}:
+        return "yolov8n_baseline_multiscale_onnx"
+    return _resolve_detector(model_ui)
 
 
 def _autodetect_annotations_dir(frames_root: Path) -> str:
@@ -1762,6 +1950,7 @@ def run_unified_pipeline(
     detector_conf: float | None,
     detector_iou: float | None,
     detector_max_det: int | None,
+    detector_imgsz: int | None,
     display_conf: float | None,
     target_fps: float | None,
     mode_label: str,
@@ -1781,18 +1970,28 @@ def run_unified_pipeline(
 
     has_marker = False
     buffered: List[np.ndarray] = []
-    nav_mode = marker_mode
-    if marker_mode == "auto":
+    nav_mode = profile.force_marker_mode or marker_mode
+    if nav_mode == "auto":
         has_marker, buffered = _probe_marker(reader, AUTO_MARKER_SECONDS)
         nav_mode = "marker" if has_marker else "no_marker"
 
     run_reader = BufferedReader(reader, buffered)
-    ok, first = run_reader.read()
+    # Для удаленных потоков первый кадр может приходить не сразу.
+    first = None
+    ok = False
+    first_frame_deadline = time.monotonic() + 12.0
+    while time.monotonic() < first_frame_deadline:
+        ok, first = run_reader.read()
+        if ok and first is not None:
+            break
+        time.sleep(0.05)
     if not ok or first is None:
-        raise RuntimeError("Не удалось прочитать первый кадр")
+        raise RuntimeError("Не удалось прочитать первый кадр (таймаут ожидания источника)")
 
+    nav_w = int(profile.nav_width or NAV_W)
+    nav_h = int(profile.nav_height or NAV_H)
     first_orig = first
-    first_small = cv2.resize(first_orig, (NAV_W, NAV_H))
+    first_small = cv2.resize(first_orig, (nav_w, nav_h))
     first_marker = cv2.resize(first_orig, (MARKER_RESIZE_W, MARKER_RESIZE_H))
     pending_frames: Deque[np.ndarray] = deque()
     fps = run_reader.fps()
@@ -1857,7 +2056,7 @@ def run_unified_pipeline(
         best_pts4 = best[2]
         source_frame_idx = start_frame_idx
         first_orig = init_frames[start_frame_idx]
-        first_small = cv2.resize(first_orig, (NAV_W, NAV_H))
+        first_small = cv2.resize(first_orig, (nav_w, nav_h))
         first_marker = cv2.resize(first_orig, (MARKER_RESIZE_W, MARKER_RESIZE_H))
         pending_frames = deque(init_frames[start_frame_idx + 1 :])
         H_init = cv2.getPerspectiveTransform(
@@ -1945,6 +2144,7 @@ def run_unified_pipeline(
         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
     )
     processed = 0
+    last_emit_ts = -1.0e9
     if nav_mode == "marker":
         x_nav0 = float(-last_xy[0] if FLIP_X_MARKER else last_xy[0])
         y_nav0 = float(-last_xy[1] if FLIP_Y_MARKER else last_xy[1])
@@ -1965,13 +2165,13 @@ def run_unified_pipeline(
             frame_small = first_small
         elif pending_frames:
             frame_orig = pending_frames.popleft()
-            frame_small = cv2.resize(frame_orig, (NAV_W, NAV_H))
+            frame_small = cv2.resize(frame_orig, (nav_w, nav_h))
         else:
             ok, frame = run_reader.read()
             if not ok or frame is None:
                 break
             frame_orig = frame
-            frame_small = cv2.resize(frame_orig, (NAV_W, NAV_H))
+            frame_small = cv2.resize(frame_orig, (nav_w, nav_h))
         frame_marker = cv2.resize(frame_orig, (MARKER_RESIZE_W, MARKER_RESIZE_H))
 
         if nav_mode == "marker":
@@ -2180,13 +2380,18 @@ def run_unified_pipeline(
         det_latency = 0.0
         should_detect = detection_client is not None and ((frame_idx - 1) % profile.detection_stride == 0)
         if should_detect:
-            detect_frame = frame_orig if mode_label.endswith(":frames") else frame_small
+            if mode_label.startswith("nsu:stream:"):
+                detect_frame = frame_orig
+            else:
+                detect_frame = frame_orig if mode_label.endswith(":frames") else frame_small
+            detect_frame = _resize_for_detection(detect_frame, profile.detect_max_width)
             raw_detections, _raw_count, det_latency = detection_client.detect(
                 detect_frame,
                 model=detector_name,
                 conf=detector_conf,
                 iou=detector_iou,
                 max_det=detector_max_det,
+                imgsz=detector_imgsz,
             )
             if debug_evaluator is not None:
                 frame_path = getattr(run_reader, "last_path", None)
@@ -2203,9 +2408,6 @@ def run_unified_pipeline(
                 detections = raw_detections
             detections = _scale_detections_xyxy(detections, detect_frame.shape[:2], frame_small.shape[:2])
             person_count = len(detections)
-            if detections:
-                draw_detections(frame_small, detections)
-
         if save_video:
             if mode_label.endswith(":frames"):
                 if alert_frames_dir is None:
@@ -2219,7 +2421,7 @@ def run_unified_pipeline(
                 if writer is None:
                     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
                     video_out_path = REPORT_DIR / f"{report_stem}_processed.mp4"
-                    writer = cv2.VideoWriter(str(video_out_path), fourcc, max(10.0, min(60.0, fps)), (NAV_W, NAV_H))
+                    writer = cv2.VideoWriter(str(video_out_path), fourcc, max(10.0, min(60.0, fps)), (nav_w, nav_h))
                 writer.write(frame_small)
 
         duration = max(time.perf_counter() - t_start, 1e-6)
@@ -2261,10 +2463,25 @@ def run_unified_pipeline(
         emit = True
         if profile.emit_only_detections:
             emit = bool(detections)
+        if emit and profile.emit_stride > 1:
+            emit = ((frame_idx - 1) % profile.emit_stride) == 0
+        if emit and profile.emit_max_fps is not None and profile.emit_max_fps > 0:
+            min_dt = 1.0 / float(profile.emit_max_fps)
+            if (timestamp - last_emit_ts) < min_dt:
+                emit = False
+            else:
+                last_emit_ts = timestamp
+
+        if detections and (emit or save_video):
+            draw_detections(frame_small, detections)
 
         if emit:
-            payload["frame"] = encode_image_b64(frame_small)
-            if traj_np.shape[0] > 1 and (frame_idx % 10 == 0):
+            payload["frame"] = encode_image_b64(
+                frame_small,
+                jpeg_quality=profile.ui_jpeg_quality,
+                max_width=profile.ui_max_width,
+            )
+            if traj_np.shape[0] > 1 and (frame_idx % max(1, profile.plot_every_n_frames) == 0):
                 payload["plots"] = render_plots(traj_np, time_stamps)
             on_update(payload)
 
@@ -2305,6 +2522,7 @@ def run_unified_pipeline(
         "frames_total": max(0, len(traj_points) - 1),
         "avg_fps": float(max(0, len(traj_points) - 1) / duration),
         "avg_person_count": float(np.mean(person_samples)) if person_samples else 0.0,
+        "avg_detector_latency_ms": float(np.mean(det_latency_samples)) if det_latency_samples else 0.0,
         "duration_sec": duration,
         "report_url": report_url,
         "debug_metrics_info": debug_metrics_info,
@@ -2328,6 +2546,23 @@ def _build_reader(meta: Dict) -> Tuple[object, Optional[Tuple[str, str]]]:
 
     if nsu_channel == "stream":
         rpi_base_url = get_rpi_source_url(str(meta.get("rpi_url", "")))
+        # Для stream-video предпочитаем скачать исходный файл с RPi и обрабатывать локально на НСУ.
+        # Это убирает декод/перекод на RPi и снижает лаги.
+        if source_kind == "video" and bool(meta.get("stream_use_raw_video", STREAM_USE_RAW_VIDEO)) and not STREAM_PREFER_RTSP:
+            raw_path = str(meta.get("source", "")).strip()
+            if raw_path:
+                try:
+                    local_video = UPLOAD_DIR / f"{meta.get('report_stem', 'stream')}_rpi_video.mp4"
+                    local_video = fetch_remote_file_to_local(rpi_base_url, raw_path, local_video)
+                    reader = OpenCVSource(str(local_video), "file", loop_input=loop_input)
+                    if reader.is_open():
+                        meta["source_local_cache"] = str(local_video)
+                        meta["stream_backend"] = "raw_file_cached"
+                        return reader, None
+                except Exception as exc:  # noqa: BLE001
+                    # Если на RPi старый сервис без /source/raw_file или другая ошибка — откатываемся к MJPEG.
+                    meta["stream_backend"] = "mjpeg_fallback"
+                    meta["stream_backend_error"] = str(exc)
         remote_session, stream_url, rpi_base, remote_meta = start_remote_source(
             rpi_base_url,
             source_kind,
@@ -2341,12 +2576,20 @@ def _build_reader(meta: Dict) -> Tuple[object, Optional[Tuple[str, str]]]:
             max_duration_sec=meta.get("stream_max_duration_sec"),
             jpeg_quality=int(meta.get("stream_jpeg_quality", 80) or 80),
         )
-        reader = OpenCVSource(stream_url, "rtsp", loop_input=loop_input)
+        if stream_url.startswith("http://") or stream_url.startswith("https://"):
+            reader = MjpegHTTPSource(stream_url, target_fps=float(meta.get("stream_target_fps") or 30.0))
+        else:
+            reader = OpenCVSource(stream_url, "rtsp", loop_input=loop_input)
         if not reader.is_open():
             raise RuntimeError("Не удалось открыть поток с RaspberryPi")
         if isinstance(remote_meta, dict):
             meta["stream_mission_id"] = str(remote_meta.get("mission_id", meta.get("stream_mission_id", "")))
             meta["stream_target_fps"] = float(remote_meta.get("target_fps", meta.get("stream_target_fps") or 0.0))
+            backend_name = str(remote_meta.get("backend", "")).strip()
+            if backend_name:
+                meta["stream_backend"] = backend_name
+        if not meta.get("stream_backend"):
+            meta["stream_backend"] = "mjpeg_fallback"
         return reader, (rpi_base, remote_session)
 
     if source_kind == "frames":
@@ -2471,11 +2714,12 @@ def stream_start_mission(req: StartStreamMissionRequest):
     created_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     report_stem = f"{created_ts}_CPU_{session_id}"
     model_ui = str(req.model or "yolov8n_baseline_multiscale").strip().lower()
-    detector_name = _resolve_detector(model_ui)
+    detector_name = _resolve_stream_detector(model_ui)
 
     detector_conf = None
     detector_iou = None
     detector_max_det = None
+    detector_imgsz = STREAM_DET_IMGSZ if mode == "video" else None
     display_conf = None
     target_fps = None
     debug_preset_name = ""
@@ -2484,12 +2728,15 @@ def stream_start_mission(req: StartStreamMissionRequest):
         debug_preset_name = "nsu_frames_yolov8n_alert_contract"
         debug_preset_meta = _load_debug_preset(debug_preset_name)
         model_ui = debug_preset_meta["model_ui"]
-        detector_name = _resolve_detector(model_ui)
+        detector_name = _resolve_stream_detector(model_ui)
         detector_conf = float(debug_preset_meta.get("infer_conf", debug_preset_meta["detector_conf"]))
         detector_iou = float(debug_preset_meta.get("infer_nms_iou", 0.7))
         detector_max_det = int(debug_preset_meta.get("infer_max_det", 300))
+        detector_imgsz = None
         display_conf = float(debug_preset_meta.get("display_conf", detector_conf))
         target_fps = debug_preset_meta.get("target_fps")
+    elif mode == "video":
+        detector_max_det = STREAM_DET_MAX_DET
 
     sessions[session_id] = {
         "run_mode": "nsu",
@@ -2510,6 +2757,7 @@ def stream_start_mission(req: StartStreamMissionRequest):
         "detector_conf": detector_conf,
         "detector_iou": detector_iou,
         "detector_max_det": detector_max_det,
+        "detector_imgsz": detector_imgsz,
         "display_conf": display_conf,
         "target_fps": target_fps,
         "debug_preset": debug_preset_name,
@@ -2520,11 +2768,12 @@ def stream_start_mission(req: StartStreamMissionRequest):
         "coco_gt_override": annotations_coco_value if mode == "frames" else "",
         "stream_mission_id": mission_id,
         "stream_realtime": True,
-        "stream_target_fps": float(6.0),
+        "stream_target_fps": float(STREAM_VIDEO_TARGET_FPS),
         "stream_jitter_ms": 0,
         "stream_drop_if_lag": True,
         "stream_max_duration_sec": 0.0,
-        "stream_jpeg_quality": 80,
+        "stream_jpeg_quality": int(STREAM_RPI_JPEG_QUALITY),
+        "stream_use_raw_video": bool(STREAM_USE_RAW_VIDEO) if mode == "video" else False,
     }
     return {
         "ok": True,
@@ -2605,7 +2854,10 @@ async def upload_video(
     created_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     report_stem = f"{created_ts}_{device.replace(' ', '_')}_{session_id}"
 
-    detector_name = _resolve_detector(model) if run_mode == "nsu" else "yolo"
+    if run_mode == "nsu":
+        detector_name = _resolve_stream_detector(model) if nsu_channel == "stream" else _resolve_detector(model)
+    else:
+        detector_name = "yolo"
     detector_conf = None
     detector_iou = None
     detector_max_det = None
@@ -2617,7 +2869,7 @@ async def upload_video(
         debug_preset_name = NSU_LOCAL_VIDEO_PRESET
         debug_preset_meta = _load_debug_preset(debug_preset_name)
         model = debug_preset_meta["model_ui"]
-        detector_name = _resolve_detector(model)
+        detector_name = _resolve_stream_detector(model) if nsu_channel == "stream" else _resolve_detector(model)
         detector_conf = float(debug_preset_meta.get("infer_conf", debug_preset_meta["detector_conf"]))
         detector_iou = float(debug_preset_meta.get("infer_nms_iou", 0.7))
         detector_max_det = int(debug_preset_meta.get("infer_max_det", 300))
@@ -2681,10 +2933,11 @@ async def start_rtsp(
 
     created_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     report_stem = f"{created_ts}_{device.replace(' ', '_')}_{session_id}"
-    detector_name = _resolve_detector(model) if run_mode == "nsu" else "yolo"
+    detector_name = _resolve_stream_detector(model) if (run_mode == "nsu" and nsu_channel == "stream") else (_resolve_detector(model) if run_mode == "nsu" else "yolo")
     detector_conf = None
     detector_iou = None
     detector_max_det = None
+    detector_imgsz = STREAM_DET_IMGSZ if (run_mode == "nsu" and nsu_channel == "stream") else None
     display_conf = None
     target_fps = None
     debug_preset_name = ""
@@ -2693,12 +2946,15 @@ async def start_rtsp(
         debug_preset_name = NSU_LOCAL_VIDEO_PRESET
         debug_preset_meta = _load_debug_preset(debug_preset_name)
         model = debug_preset_meta["model_ui"]
-        detector_name = _resolve_detector(model)
+        detector_name = _resolve_stream_detector(model) if nsu_channel == "stream" else _resolve_detector(model)
         detector_conf = float(debug_preset_meta.get("infer_conf", debug_preset_meta["detector_conf"]))
         detector_iou = float(debug_preset_meta.get("infer_nms_iou", 0.7))
         detector_max_det = int(debug_preset_meta.get("infer_max_det", 300))
+        detector_imgsz = None
         display_conf = float(debug_preset_meta.get("display_conf", detector_conf))
         target_fps = debug_preset_meta["target_fps"]
+    elif run_mode == "nsu" and nsu_channel == "stream":
+        detector_max_det = STREAM_DET_MAX_DET
 
     source = rtsp_url
     if run_mode == "nsu" and nsu_channel == "stream":
@@ -2723,6 +2979,7 @@ async def start_rtsp(
         "detector_conf": detector_conf,
         "detector_iou": detector_iou,
         "detector_max_det": detector_max_det,
+        "detector_imgsz": detector_imgsz,
         "display_conf": display_conf,
         "target_fps": target_fps,
         "debug_preset": debug_preset_name,
@@ -2903,10 +3160,11 @@ async def start_source(
     session_id = uuid.uuid4().hex
     created_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     report_stem = f"{created_ts}_{device.replace(' ', '_')}_{session_id}"
-    detector_name = _resolve_detector(model) if run_mode == "nsu" else "yolo"
+    detector_name = _resolve_stream_detector(model) if (run_mode == "nsu" and nsu_channel == "stream") else (_resolve_detector(model) if run_mode == "nsu" else "yolo")
     detector_conf = None
     detector_iou = None
     detector_max_det = None
+    detector_imgsz = STREAM_DET_IMGSZ if (run_mode == "nsu" and nsu_channel == "stream" and source_kind in {"video", "rtsp"}) else None
     display_conf = None
     target_fps = None
     debug_preset_name = debug_preset.strip()
@@ -2916,12 +3174,15 @@ async def start_source(
             raise HTTPException(status_code=400, detail="debug_preset доступен только для run_mode=nsu")
         debug_preset_meta = _load_debug_preset(debug_preset_name)
         model = debug_preset_meta["model_ui"]
-        detector_name = _resolve_detector(model)
+        detector_name = _resolve_stream_detector(model) if nsu_channel == "stream" else _resolve_detector(model)
         detector_conf = float(debug_preset_meta.get("infer_conf", debug_preset_meta["detector_conf"]))
         detector_iou = float(debug_preset_meta.get("infer_nms_iou", 0.7))
         detector_max_det = int(debug_preset_meta.get("infer_max_det", 300))
+        detector_imgsz = None
         display_conf = float(debug_preset_meta.get("display_conf", detector_conf))
         target_fps = debug_preset_meta["target_fps"]
+    elif run_mode == "nsu" and nsu_channel == "stream" and source_kind in {"video", "rtsp"}:
+        detector_max_det = STREAM_DET_MAX_DET
 
     if source_kind == "frames" and annotations_file is not None:
         filename = annotations_file.filename or ""
@@ -2950,6 +3211,7 @@ async def start_source(
         "detector_conf": detector_conf,
         "detector_iou": detector_iou,
         "detector_max_det": detector_max_det,
+        "detector_imgsz": detector_imgsz,
         "display_conf": display_conf,
         "target_fps": target_fps,
         "debug_preset": debug_preset_name,
@@ -2965,6 +3227,7 @@ async def start_source(
         "stream_drop_if_lag": stream_drop_if_lag_flag,
         "stream_max_duration_sec": stream_max_duration_sec_val,
         "stream_jpeg_quality": stream_jpeg_quality_val,
+        "stream_use_raw_video": bool(STREAM_USE_RAW_VIDEO) if (run_mode == "nsu" and nsu_channel == "stream" and source_kind == "video") else False,
     }
     return {
         "session_id": session_id,
@@ -3038,12 +3301,20 @@ async def ws_process(websocket: WebSocket, session_id: str):
             display_conf = float(display_conf)
         except Exception:
             display_conf = None
+    detector_imgsz = meta.get("detector_imgsz")
+    if detector_imgsz is not None:
+        try:
+            detector_imgsz = int(detector_imgsz)
+        except Exception:
+            detector_imgsz = None
     marker_mode = meta.get("marker_mode", "auto")
     detect_enabled = bool(meta.get("detect", True))
     save_video = bool(meta.get("save_video", False))
     report_stem = meta.get("report_stem", f"{session_id}")
 
     profile = source_profile(source_kind, run_mode=run_mode, nsu_channel=nsu_channel, detect_enabled=detect_enabled)
+    if run_mode == "nsu" and nsu_channel == "stream":
+        marker_mode = "marker" if not detect_enabled else "no_marker"
 
     sessions[session_id]["stop"] = False
     loop = asyncio.get_event_loop()
@@ -3096,6 +3367,8 @@ async def ws_process(websocket: WebSocket, session_id: str):
                             "mission_id": str(meta.get("stream_mission_id", "")),
                             "target_fps": float(meta.get("stream_target_fps") or 0.0),
                             "realtime": bool(meta.get("stream_realtime", True)),
+                            "backend": str(meta.get("stream_backend", "")),
+                            "backend_error": str(meta.get("stream_backend_error", "")),
                         }
                     }
                 )
@@ -3110,24 +3383,33 @@ async def ws_process(websocket: WebSocket, session_id: str):
                 debug_metrics_info = "Debug-метрики выключены: в preset не указан dataset.coco_gt."
             else:
                 coco_path = Path(coco_gt_path)
+                if run_mode == "nsu" and nsu_channel == "stream" and remote_link is not None:
+                    # Для stream-режима COCO лежит на RPi: подтягиваем локально перед оценкой.
+                    local_coco = UPLOAD_DIR / f"{session_id}_stream_coco.json"
+                    try:
+                        coco_path = fetch_remote_file_to_local(remote_link[0], coco_gt_path, local_coco)
+                        meta["coco_gt_override"] = str(coco_path)
+                    except Exception as exc:  # noqa: BLE001
+                        debug_metrics_info = f"Debug-метрики выключены: не удалось скачать COCO с RPi ({exc})"
                 if not coco_path.is_absolute():
                     coco_path = Path.cwd() / coco_path
                 images_root = Path(images_dir) if images_dir else None
                 if images_root is not None and not images_root.is_absolute():
                     images_root = Path.cwd() / images_root
-                debug_evaluator = CocoAlertContractEvaluator(
-                    coco_gt_path=coco_path,
-                    images_root=images_root,
-                    cfg={
-                        "thresholds": [float(x) for x in debug_preset_meta.get("eval_thresholds", [])],
-                        "target_recall": debug_preset_meta.get("target_recall"),
-                        "fp_per_min_target": debug_preset_meta.get("fp_per_min_target"),
-                        "fp_total_max": debug_preset_meta.get("fp_total_max", 1.0e12),
-                        "fps": debug_preset_meta.get("target_fps"),
-                        "alert_contract": dict(debug_preset_meta.get("alert_contract", {})),
-                    },
-                )
-                debug_metrics_info = ""
+                if not debug_metrics_info:
+                    debug_evaluator = CocoAlertContractEvaluator(
+                        coco_gt_path=coco_path,
+                        images_root=images_root,
+                        cfg={
+                            "thresholds": [float(x) for x in debug_preset_meta.get("eval_thresholds", [])],
+                            "target_recall": debug_preset_meta.get("target_recall"),
+                            "fp_per_min_target": debug_preset_meta.get("fp_per_min_target"),
+                            "fp_total_max": debug_preset_meta.get("fp_total_max", 1.0e12),
+                            "fps": debug_preset_meta.get("target_fps"),
+                            "alert_contract": dict(debug_preset_meta.get("alert_contract", {})),
+                        },
+                    )
+                    debug_metrics_info = ""
         elif not str(meta.get("annotations_dir", "")).strip():
             debug_metrics_info = ""
         elif source_kind != "frames" or run_mode != "nsu" or nsu_channel != "local":
@@ -3157,6 +3439,7 @@ async def ws_process(websocket: WebSocket, session_id: str):
             detector_conf,
             detector_iou,
             detector_max_det,
+            detector_imgsz,
             display_conf,
             target_fps,
             f"{run_mode}:{nsu_channel}:{source_kind}",
@@ -3175,6 +3458,12 @@ async def ws_process(websocket: WebSocket, session_id: str):
             remote_link = sessions[session_id].get("remote_link")
             if remote_link:
                 stop_remote_source(remote_link[0], remote_link[1])
+            local_cache = sessions[session_id].get("source_local_cache")
+            if local_cache:
+                try:
+                    Path(str(local_cache)).unlink(missing_ok=True)
+                except Exception:
+                    pass
             if sessions[session_id].get("delete_after"):
                 try:
                     Path(sessions[session_id].get("source", "")).unlink(missing_ok=True)

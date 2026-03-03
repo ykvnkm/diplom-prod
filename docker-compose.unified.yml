@@ -12,11 +12,14 @@ services:
       DET_DEVICE: "cpu"
       NANODET_ONNX: "0"
       REQUIRE_NANODET_PTH: "1"
-      REQUIRE_NANODET_ONNX: "0"
+      REQUIRE_NANODET_ONNX: "1"
+      REQUIRE_YOLO_ONNX: "1"
       NSU_LOCAL_FRAMES_DIR: "/app/public/images"
       NSU_LOCAL_FRAMES_COCO: "/app/public/annotations/val_from_labels.json"
       YOLO_WEIGHTS_URL: "https://github.com/ykvnkm/rescueai-models/releases/download/v1/yolov8n_baseline_multiscale.pt"
+      YOLO_ONNX_URL: "https://github.com/ykvnkm/rescueai-models/releases/download/v1.1.0-onnx/yolov8n_baseline_multiscale.onnx"
       NANODET_PTH_URL: "https://github.com/ykvnkm/rescueai-models/releases/download/v1/nanodet-plus-m-1.5x_416.pth"
+      NANODET_ONNX_URL: "https://github.com/ykvnkm/rescueai-models/releases/download/v1.1.0-onnx/nanodet-plus-m-1.5x_416.onnx"
 
     volumes:
       - rescueai_models:/app/models

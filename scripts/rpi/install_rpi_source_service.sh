@@ -28,6 +28,9 @@ WorkingDirectory=${PROJECT_DIR}
 Environment=PYTHONUNBUFFERED=1
 Environment=RPI_VIDEO_DIR=/home/${RUN_USER}/Documents/test_videos
 Environment=RPI_MISSIONS_DIR=/home/${RUN_USER}/Documents/missions
+Environment=RPI_RTSP_ENABLE=1
+Environment=RPI_RTSP_PORT=8554
+Environment=RPI_RTSP_PATH_PREFIX=live
 ExecStart=${PROJECT_DIR}/.venv/bin/python -m uvicorn services.unified_runtime.rpi_source_service:app --host 0.0.0.0 --port 9100
 Restart=always
 RestartSec=2

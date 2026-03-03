@@ -15,8 +15,9 @@
 - Health: `/health`
 
 2. `rpi_source_service.py`
-- Сервис для RaspberryPi: отдает только исходный контент через MJPEG
+- Сервис для RaspberryPi: поднимает миссию-источник и публикует RTSP (fallback: MJPEG)
 - `POST /source/start` (`file|rtsp|frames`)
+- `GET /source/raw_file?path=...`
 - `GET /source/stream/{session_id}`
 - `POST /source/stop/{session_id}`
 
@@ -78,6 +79,39 @@ python -m uvicorn services.unified_runtime.unified_navigation_service:app --host
 python -m uvicorn services.unified_runtime.rpi_source_service:app --host 0.0.0.0 --port 9100
 ```
 
+### RTSP на RaspberryPi (обязательно для потокового режима)
+
+На RPi должны быть установлены `mediamtx` и `ffmpeg`:
+
+```bash
+sudo apt update
+sudo apt install -y ffmpeg
+wget -qO /tmp/mediamtx.tar.gz https://github.com/bluenviron/mediamtx/releases/latest/download/mediamtx_linux_arm64v8.tar.gz
+sudo tar -xzf /tmp/mediamtx.tar.gz -C /usr/local/bin mediamtx
+sudo chmod +x /usr/local/bin/mediamtx
+```
+
+Запуск `mediamtx` как service:
+
+```bash
+sudo tee /etc/systemd/system/mediamtx.service >/dev/null <<'EOF'
+[Unit]
+Description=MediaMTX RTSP Server
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/mediamtx
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now mediamtx.service
+sudo systemctl status mediamtx.service --no-pager
+```
+
 ### Автозапуск на RaspberryPi (как на дроне)
 
 ```bash
@@ -94,6 +128,7 @@ bash scripts/rpi/install_rpi_source_service.sh /home/ykvnkm/Diplom-prod ykvnkm y
 Сервис будет автоматически подниматься при включении устройства:
 - unit: `rescueai-rpi-source.service`
 - порт: `9100`
+- RTSP порт: `8554`
 - видео-каталог: `/home/<user>/Documents/test_videos`
 - миссии кадров: `/home/<user>/Documents/missions/<mission_id>/images`
 - аннотации миссии: `/home/<user>/Documents/missions/<mission_id>/annotations/*.json`
@@ -118,11 +153,37 @@ bash scripts/rpi/install_rpi_source_service.sh /home/ykvnkm/Diplom-prod ykvnkm y
 - `Макс. длит., сек`
 
 Под капотом:
-- RaspberryPi отдает поток через `rpi_source_service` (`/source/start`, `/source/stream/{id}`).
+- RaspberryPi запускает RTSP-публикатор через `rpi_source_service` (`/source/start`) и отдает `rtsp://.../live/<session_id>`.
 - Инференс и навигация выполняются на НСУ (локально в `unified_navigation_service` + `detection_service`).
 - В UI выводятся телеметрии канала: `Поток FPS (RPi)` и `Дроп кадров (RPi)`.
 - кнопка `Начать миссию` запускает поток на RPi и обработку на НСУ.
 - кнопка `Завершить миссию` останавливает поток на RPi и завершает обработку НСУ.
+
+Проверка RPi вручную:
+
+```bash
+curl -s http://<RPI_IP>:9100/health
+curl -s http://<RPI_IP>:9100/mission/catalog
+```
+
+Пробный старт RTSP-миссии вручную:
+
+```bash
+curl -s -X POST "http://<RPI_IP>:9100/source/start" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "mode":"file",
+    "source":"/home/ykvnkm/Documents/test_videos/test_4.mp4",
+    "loop":true,
+    "mission_id":"test_4",
+    "realtime":true,
+    "target_fps":8
+  }'
+```
+
+В ответе должны быть поля:
+- `backend: "rtsp"`
+- `rtsp_url: "rtsp://<RPI_IP>:8554/live/<session_id>"`
 
 ## Локальный RTSP (mediamtx + ffmpeg)
 
