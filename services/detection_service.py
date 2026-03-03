@@ -517,7 +517,12 @@ async def detect(
     start = time.perf_counter()
     runtime = dict(model_entry.get("runtime") or {})
     if imgsz_val is not None and model_entry["kind"] == "yolo":
-        runtime["imgsz"] = max(320, min(1280, int(imgsz_val)))
+        # ONNX YOLO может быть экспортирован с фиксированным input size (например 960x960).
+        # В этом случае не даем внешнему imgsz сломать инференс.
+        if resolved_model in {"yolov8n_baseline_multiscale_onnx", "yolo_onnx"} and "imgsz" in runtime:
+            pass
+        else:
+            runtime["imgsz"] = max(320, min(1280, int(imgsz_val)))
     detections = detect_people(
         frame,
         model_entry["model"],

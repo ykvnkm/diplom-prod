@@ -7,13 +7,22 @@ __pycache__/
 .venv/
 venv/
 env/
+.env
+.env.*
+!.env.example
 
 # Tool caches / test artifacts
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
+.hypothesis/
+.tox/
+.nox/
+.pyre/
+.dmypy.json
 
 # IDE / OS
 .DS_Store
@@ -24,10 +33,19 @@ htmlcov/
 runtime/
 logs/
 *.log
+*.pid
+*.out
+*.err
+tmp/
+temp/
 
 # Local model artifacts
 models/
 nanodet/nanodet/model/weights/
+*.onnx
+*.pth
+*.pt
+*.ckpt
 
 # Local datasets / uploads (keep folder structure in git)
 public/images/*
@@ -37,3 +55,13 @@ public/annotations/*
 
 # Temporary files
 *.tmp
+*.swp
+*.swo
+
+# Jupyter / notebooks
+.ipynb_checkpoints/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/

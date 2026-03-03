@@ -20,13 +20,21 @@ git clone https://github.com/ykvnkm/diplom-prod.git
 cd diplom-prod
 ```
 
-3. Запустите сервис:
+3. Создайте локальный `.env` из шаблона:
+
+```bash
+cp .env.example .env
+```
+
+4. При необходимости отредактируйте `.env` под ваше окружение (IP RaspberryPi, пути и URL весов).
+
+5. Запустите сервис:
 
 ```bash
 docker compose -f docker-compose.unified.yml up --build
 ```
 
-4. Дождитесь логов без ошибок и сообщений о запуске `uvicorn`.
+6. Дождитесь логов без ошибок и сообщений о запуске `uvicorn`.
 
 ## Куда заходить
 

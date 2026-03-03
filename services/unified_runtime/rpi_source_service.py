@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import time
 import uuid
+import tempfile
 from pathlib import Path
 from typing import Dict, Generator, List, Optional
 
@@ -17,9 +18,36 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(title="RPi Source Service", description="Streams raw content from RaspberryPi")
 
+
+def _load_env_file() -> None:
+    # Local fallback for runs without systemd/docker env injection.
+    env_path = Path(__file__).resolve().parents[2] / ".env"
+    if not env_path.exists():
+        return
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        val = value.strip()
+        if len(val) >= 2 and ((val[0] == val[-1] == '"') or (val[0] == val[-1] == "'")):
+            val = val[1:-1]
+        os.environ[key] = val
+
+
+_load_env_file()
+
+
 SESSIONS: Dict[str, Dict] = {}
-RPI_VIDEO_DIR = Path(os.getenv("RPI_VIDEO_DIR", "/home/ykvnkm/Documents/test_videos"))
-RPI_MISSIONS_DIR = Path(os.getenv("RPI_MISSIONS_DIR", "/home/ykvnkm/Documents/missions"))
+RPI_VIDEO_DIR = Path(os.getenv("RPI_VIDEO_DIR", "/home/pi/Documents/test_videos"))
+RPI_MISSIONS_DIR = Path(os.getenv("RPI_MISSIONS_DIR", "/home/pi/Documents/missions"))
 RPI_RTSP_HOST = os.getenv("RPI_RTSP_HOST", "").strip()
 RPI_RTSP_PORT = int(os.getenv("RPI_RTSP_PORT", "8554"))
 RPI_RTSP_PATH_PREFIX = os.getenv("RPI_RTSP_PATH_PREFIX", "live").strip().strip("/")
@@ -124,14 +152,45 @@ def _frames_glob_pattern(folder: str) -> str:
     root = Path(folder)
     patterns = ["*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG"]
     for pat in patterns:
-        if any(root.glob(pat)):
-            return str(root / pat)
-    return str(root / "*.jpg")
+        # Для миссий с вложенными папками используем рекурсивный glob-паттерн.
+        if any(root.rglob(pat)):
+            return str(root / "**" / pat)
+    return str(root / "**" / "*.jpg")
+
+
+def _scan_frame_files(folder: str) -> List[Path]:
+    root = Path(folder)
+    exts = {".jpg", ".jpeg", ".png", ".JPG", ".JPEG", ".PNG"}
+    files: List[Path] = []
+    for p in root.rglob("*"):
+        if p.is_file() and p.suffix in exts:
+            files.append(p)
+    return sorted(files)
+
+
+def _build_frames_concat_file(session_id: str, folder: str, fps: float) -> Optional[Path]:
+    files = _scan_frame_files(folder)
+    if not files:
+        return None
+    dur = 1.0 / max(float(fps), 1e-6)
+    lines: List[str] = []
+    for p in files:
+        safe = str(p).replace("'", "'\\''")
+        lines.append(f"file '{safe}'\n")
+        lines.append(f"duration {dur:.6f}\n")
+    safe_last = str(files[-1]).replace("'", "'\\''")
+    lines.append(f"file '{safe_last}'\n")
+    out = Path(tempfile.gettempdir()) / f"rpi_frames_concat_{session_id}.txt"
+    out.write_text("".join(lines), encoding="utf-8")
+    return out
 
 
 def _rtsp_publish_url(host_header: str, session_id: str) -> tuple[str, str]:
+    _ = session_id
     rtsp_host = _resolve_rtsp_host(host_header)
-    stream_key = f"{RPI_RTSP_PATH_PREFIX}/{session_id}" if RPI_RTSP_PATH_PREFIX else session_id
+    # Используем фиксированный путь (по умолчанию /live), чтобы быть совместимыми
+    # с mediamtx-конфигами, где явно описан конкретный path.
+    stream_key = RPI_RTSP_PATH_PREFIX or "live"
     public_url = f"rtsp://{rtsp_host}:{RPI_RTSP_PORT}/{stream_key}"
     # ffmpeg публикует в локальный mediamtx на этом же устройстве.
     ingest_url = f"rtsp://127.0.0.1:{RPI_RTSP_PORT}/{stream_key}"
@@ -150,19 +209,36 @@ def _start_rtsp_publisher(meta: Dict, host_header: str) -> tuple[Optional[subpro
     target_fps = float(meta.get("target_fps", 0.0))
     if target_fps <= 0:
         target_fps = 6.0 if mode == "frames" else 10.0
+    target_fps = min(target_fps, 6.0)
     public_url, ingest_url = _rtsp_publish_url(host_header, str(meta.get("session_id", "")))
     common_out = [
         "-an",
+        "-vf",
+        "scale=640:-2:flags=fast_bilinear",
+        "-r",
+        f"{target_fps:.3f}",
         "-c:v",
         "libx264",
         "-preset",
         "ultrafast",
         "-tune",
         "zerolatency",
+        "-profile:v",
+        "baseline",
         "-pix_fmt",
         "yuv420p",
+        "-bf",
+        "0",
+        "-b:v",
+        "700k",
+        "-maxrate",
+        "900k",
+        "-bufsize",
+        "1800k",
         "-g",
-        str(max(10, int(round(target_fps * 2)))),
+        str(max(12, int(round(target_fps * 2)))),
+        "-keyint_min",
+        str(max(6, int(round(target_fps)))),
         "-f",
         "rtsp",
         "-rtsp_transport",
@@ -175,23 +251,27 @@ def _start_rtsp_publisher(meta: Dict, host_header: str) -> tuple[Optional[subpro
             cmd += ["-stream_loop", "-1"]
         cmd += ["-i", source] + common_out
     elif mode == "frames":
-        pattern = _frames_glob_pattern(source)
+        concat_file = _build_frames_concat_file(str(meta.get("session_id", "")), source, target_fps)
+        if concat_file is None or not concat_file.exists():
+            meta["publisher_error"] = f"В папке не найдены кадры: {source}"
+            return None, ""
+        meta["frames_concat_file"] = str(concat_file)
         cmd = [
             ffmpeg,
             "-hide_banner",
             "-loglevel",
             "error",
             "-re",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
         ]
         if loop:
             cmd += ["-stream_loop", "-1"]
         cmd += [
-            "-framerate",
-            f"{target_fps:.3f}",
-            "-pattern_type",
-            "glob",
             "-i",
-            pattern,
+            str(concat_file),
         ] + common_out
     elif mode == "rtsp":
         cmd = [
@@ -206,7 +286,19 @@ def _start_rtsp_publisher(meta: Dict, host_header: str) -> tuple[Optional[subpro
         ] + common_out
     else:
         return None, ""
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # noqa: S603
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)  # noqa: S603
+    time.sleep(0.6)
+    if proc.poll() is not None:
+        err = ""
+        if proc.stderr is not None:
+            try:
+                raw = proc.stderr.read() or b""
+                err = raw.decode("utf-8", errors="ignore").strip()[-500:]
+            except Exception:
+                err = ""
+        meta["publisher_error"] = err or "ffmpeg publisher exited unexpectedly"
+        return None, ""
+    meta["publisher_error"] = ""
     return proc, public_url
 
 
@@ -258,6 +350,7 @@ def health():
                 "backend": str(meta.get("backend", "mjpeg")),
                 "rtsp_url": str(meta.get("rtsp_url", "")),
                 "publisher_running": bool(meta.get("publisher_running", False)),
+                "publisher_error": str(meta.get("publisher_error", "")),
             }
         )
     return {
@@ -312,6 +405,7 @@ def source_session_info(session_id: str):
         "backend": str(meta.get("backend", "mjpeg")),
         "rtsp_url": str(meta.get("rtsp_url", "")),
         "publisher_running": bool(meta.get("publisher_running", False)),
+        "publisher_error": str(meta.get("publisher_error", "")),
     }
 
 
@@ -333,6 +427,24 @@ def start_source(req: StartSourceRequest, request: Request):
 
     mode = req.mode
     mission_id = req.mission_id.strip() or f"mission_{uuid.uuid4().hex[:10]}"
+
+    # Один активный RTSP-паблишер: перед стартом новой миссии гасим предыдущие.
+    for sid, smeta in list(SESSIONS.items()):
+        if bool(smeta.get("stop", False)):
+            continue
+        proc = smeta.get("publisher_proc")
+        if proc is not None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            smeta["publisher_running"] = False
+            smeta["publisher_proc"] = None
+        smeta["stop"] = True
     if mode in ("file", "frames"):
         p = Path(source)
         if not p.exists():
@@ -375,6 +487,7 @@ def start_source(req: StartSourceRequest, request: Request):
         "backend": "mjpeg",
         "rtsp_url": "",
         "publisher_running": False,
+        "publisher_error": "",
         "publisher_proc": None,
     }
     rtsp_proc, rtsp_url = _start_rtsp_publisher(SESSIONS[session_id], request.headers.get("host", ""))
@@ -383,6 +496,10 @@ def start_source(req: StartSourceRequest, request: Request):
         SESSIONS[session_id]["publisher_running"] = True
         SESSIONS[session_id]["rtsp_url"] = rtsp_url
         SESSIONS[session_id]["backend"] = "rtsp"
+    else:
+        err = str(SESSIONS[session_id].get("publisher_error", "")).strip() or "RTSP publisher не запустился"
+        # В потоковом контуре ожидается только RTSP.
+        raise HTTPException(status_code=500, detail=err)
     stream_url = f"/source/stream/{session_id}"
     return StartSourceResponse(
         session_id=session_id,
@@ -414,6 +531,12 @@ def stop_source(session_id: str):
                 pass
         meta["publisher_running"] = False
         meta["publisher_proc"] = None
+    concat_file = meta.get("frames_concat_file")
+    if concat_file:
+        try:
+            Path(str(concat_file)).unlink(missing_ok=True)
+        except Exception:
+            pass
     return StopSourceResponse(status="stopping")
 
 
@@ -505,6 +628,12 @@ def _mjpeg_generator(session_id: str) -> Generator[bytes, None, None]:
     finally:
         if cap is not None:
             cap.release()
+        concat_file = meta.get("frames_concat_file")
+        if concat_file:
+            try:
+                Path(str(concat_file)).unlink(missing_ok=True)
+            except Exception:
+                pass
         proc = meta.get("publisher_proc")
         if proc is not None:
             try:
