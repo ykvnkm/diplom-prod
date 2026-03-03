@@ -4,16 +4,21 @@
 
 default_conf_thresholds:
   yolov8n_baseline_multiscale: 0.02
+  yolov8n_baseline_multiscale_onnx: 0.02
   yolo: 0.02
+  yolo_onnx: 0.02
   nanodet: 0.35
   nanodet15: 0.35
   nanodet15_onnx: 0.35
 
 model_aliases:
   yolo12: yolov8n_baseline_multiscale
+  yolo_stream: yolov8n_baseline_multiscale_onnx
   nanodet: nanodet15
   nanodet_onnx: nanodet15_onnx
 
 yolo_weights:
   yolo: models/yolov8n_baseline_multiscale.pt
   yolov8n_baseline_multiscale: models/yolov8n_baseline_multiscale.pt
+  yolo_onnx: models/yolov8n_baseline_multiscale.onnx
+  yolov8n_baseline_multiscale_onnx: models/yolov8n_baseline_multiscale.onnx

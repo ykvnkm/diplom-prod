@@ -1,4 +1,5 @@
 detection_url: http://127.0.0.1:8001
+rpi_source_url: http://192.168.0.118:9100
 ui_template_path: services/unified_runtime/templates/unified_navigation_ui.html
 
 mode_flags:

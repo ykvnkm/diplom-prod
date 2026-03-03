@@ -19,7 +19,9 @@ except Exception:  # pragma: no cover
 
 MODEL_DEFAULT_CONF = {
     "yolov8n_baseline_multiscale": 0.02,
+    "yolov8n_baseline_multiscale_onnx": 0.02,
     "yolo": 0.02,
+    "yolo_onnx": 0.02,
     "nanodet15": 0.35,
     "nanodet15_onnx": 0.35,
     "nanodet": 0.35,
@@ -30,9 +32,12 @@ MODEL_ALIASES = {
     "yolo12": "yolov8n_baseline_multiscale",
 }
 YOLOV8N_BASELINE_MULTISCALE_WEIGHTS = Path("models/yolov8n_baseline_multiscale.pt")
+YOLOV8N_BASELINE_MULTISCALE_ONNX = Path("models/yolov8n_baseline_multiscale.onnx")
 YOLO_MODEL_WEIGHTS = {
     "yolov8n_baseline_multiscale": YOLOV8N_BASELINE_MULTISCALE_WEIGHTS,
     "yolo": YOLOV8N_BASELINE_MULTISCALE_WEIGHTS,
+    "yolov8n_baseline_multiscale_onnx": YOLOV8N_BASELINE_MULTISCALE_ONNX,
+    "yolo_onnx": YOLOV8N_BASELINE_MULTISCALE_ONNX,
 }
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 NANODET_ROOT = PROJECT_ROOT / "nanodet"
@@ -118,6 +123,16 @@ def ensure_yolo_assets() -> Path:
     return yolo_target
 
 
+def ensure_yolo_onnx_assets() -> Path:
+    yolo_target = Path(os.getenv("YOLO_ONNX_PATH", str(YOLOV8N_BASELINE_MULTISCALE_ONNX)))
+    yolo_url = os.getenv(
+        "YOLO_ONNX_URL",
+        "",
+    )
+    _download_if_missing(yolo_target, yolo_url, label="веса YOLO (onnx)")
+    return yolo_target
+
+
 def ensure_nanodet_assets(require_onnx: bool = False) -> None:
     if env_flag("REQUIRE_NANODET_CONFIG", default=False):
         config_target = Path(os.getenv("NANODET_CONFIG", str(NANODET_CONFIG)))
@@ -150,8 +165,10 @@ def load_yolo(device, weights_path: Path = YOLOV8N_BASELINE_MULTISCALE_WEIGHTS):
     if not weights_path.exists():
         raise FileNotFoundError(f"Не найден файл весов: {weights_path}")
     model = YOLO(str(weights_path))
-    model.to(str(device))
-    model.fuse()
+    # Для ONNX backend у Ultralytics model.to/fuse не требуются.
+    if weights_path.suffix.lower() != ".onnx":
+        model.to(str(device))
+        model.fuse()
     return model
 
 
@@ -399,6 +416,13 @@ def _load_model():
     yolo_weights = ensure_yolo_assets()
     YOLO_MODEL_WEIGHTS["yolov8n_baseline_multiscale"] = yolo_weights
     YOLO_MODEL_WEIGHTS["yolo"] = yolo_weights
+    try:
+        yolo_onnx = ensure_yolo_onnx_assets()
+        YOLO_MODEL_WEIGHTS["yolov8n_baseline_multiscale_onnx"] = yolo_onnx
+        YOLO_MODEL_WEIGHTS["yolo_onnx"] = yolo_onnx
+    except Exception:
+        # ONNX может отсутствовать локально и в URL; загрузим по требованию.
+        pass
     MODELS["yolov8n_baseline_multiscale"] = {
         "model": load_yolo(device, YOLO_MODEL_WEIGHTS["yolov8n_baseline_multiscale"]),
         "device": device,
@@ -423,6 +447,8 @@ def get_model(name: str):
         return MODELS[name]
     device = get_device()
     if name in YOLO_MODEL_WEIGHTS:
+        if name in ("yolov8n_baseline_multiscale_onnx", "yolo_onnx") and not YOLO_MODEL_WEIGHTS[name].exists():
+            YOLO_MODEL_WEIGHTS[name] = ensure_yolo_onnx_assets()
         if name in ("yolov8n_baseline_multiscale", "yolo") and not YOLO_MODEL_WEIGHTS[name].exists():
             YOLO_MODEL_WEIGHTS[name] = ensure_yolo_assets()
         MODELS[name] = {
@@ -440,7 +466,10 @@ def get_model(name: str):
     else:
         raise HTTPException(
             status_code=400,
-            detail=f"Неизвестная модель: {name}. Разрешено: yolov8n_baseline_multiscale, nanodet.",
+            detail=(
+                f"Неизвестная модель: {name}. Разрешено: "
+                "yolov8n_baseline_multiscale, yolov8n_baseline_multiscale_onnx, nanodet."
+            ),
         )
     return MODELS[name]
 
@@ -452,6 +481,7 @@ async def detect(
     conf: str = Form(""),
     iou: str = Form(""),
     max_det: str = Form(""),
+    imgsz: str = Form(""),
 ):
     data = await file.read()
     np_buf = np.frombuffer(data, np.uint8)
@@ -474,6 +504,10 @@ async def detect(
         max_det_val = int(float(max_det)) if max_det not in (None, "", "null") else None
     except Exception:
         max_det_val = None
+    try:
+        imgsz_val = int(float(imgsz)) if imgsz not in (None, "", "null") else None
+    except Exception:
+        imgsz_val = None
     if conf_val is None:
         conf_val = MODEL_DEFAULT_CONF.get(
             requested_model,
@@ -481,6 +515,9 @@ async def detect(
         )
 
     start = time.perf_counter()
+    runtime = dict(model_entry.get("runtime") or {})
+    if imgsz_val is not None and model_entry["kind"] == "yolo":
+        runtime["imgsz"] = max(320, min(1280, int(imgsz_val)))
     detections = detect_people(
         frame,
         model_entry["model"],
@@ -490,7 +527,7 @@ async def detect(
         iou_threshold=iou_val,
         max_det=max_det_val,
         preprocess=model_entry.get("preprocess"),
-        runtime=model_entry.get("runtime"),
+        runtime=runtime,
     )
     elapsed = (time.perf_counter() - start) * 1000.0
 

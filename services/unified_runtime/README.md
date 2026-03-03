@@ -15,8 +15,9 @@
 - Health: `/health`
 
 2. `rpi_source_service.py`
-- Сервис для RaspberryPi: отдает только исходный контент через MJPEG
+- Сервис для RaspberryPi: поднимает миссию-источник и публикует RTSP (fallback: MJPEG)
 - `POST /source/start` (`file|rtsp|frames`)
+- `GET /source/raw_file?path=...`
 - `GET /source/stream/{session_id}`
 - `POST /source/stop/{session_id}`
 
@@ -62,19 +63,127 @@ python -m uvicorn services.unified_runtime.unified_navigation_service:app --host
 - Для режима `НСУ -> local -> frames` выбор модели и debug-настроек отключен в UI.
 - Этот режим всегда запускается с конфигом:
   - `configs/nsu_frames_yolov8n_alert_contract.yaml`
-- Сравнение с GT и метрики для `frames` считаются автоматически по COCO из этого же конфига:
-  - `dataset.coco_gt` (сейчас: `public/annotations/val_from_labels.json`)
+- Сравнение с GT и метрики для `frames`:
+  - если COCO-файл загружен вручную в UI, используется он;
+  - иначе сервис автоматически ищет первый `*.json` в папке `annotations` рядом с папкой кадров (например `.../images` -> `.../annotations`);
+  - авто-логика одинаково работает для `НСУ local + frames` и `НСУ stream + frames`.
 - Метрики считаются по контракту alert/episode:
   - `Recall_event = episodes_found / episodes_total`
   - `FP/min = false_alerts_total / (mission_duration_sec / 60)`
   - c параметрами из `alert`/`eval` (`window_sec`, `quorum_k`, `cooldown_sec`, `gap_end_sec`, `gt_gap_end_sec`, `match_tolerance_sec`, `min_detections_per_frame`, `thresholds`, `target_recall`, `fp_per_min_target`)
   - `operator_confirm_delay_sec` в UI-оценке не используется.
 
-На RaspberryPi:
+На RaspberryPi (ручной запуск):
 
 ```bash
 python -m uvicorn services.unified_runtime.rpi_source_service:app --host 0.0.0.0 --port 9100
 ```
+
+### RTSP на RaspberryPi (обязательно для потокового режима)
+
+На RPi должны быть установлены `mediamtx` и `ffmpeg`:
+
+```bash
+sudo apt update
+sudo apt install -y ffmpeg
+wget -qO /tmp/mediamtx.tar.gz https://github.com/bluenviron/mediamtx/releases/latest/download/mediamtx_linux_arm64v8.tar.gz
+sudo tar -xzf /tmp/mediamtx.tar.gz -C /usr/local/bin mediamtx
+sudo chmod +x /usr/local/bin/mediamtx
+```
+
+Запуск `mediamtx` как service:
+
+```bash
+sudo tee /etc/systemd/system/mediamtx.service >/dev/null <<'EOF'
+[Unit]
+Description=MediaMTX RTSP Server
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/mediamtx
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now mediamtx.service
+sudo systemctl status mediamtx.service --no-pager
+```
+
+### Автозапуск на RaspberryPi (как на дроне)
+
+```bash
+cd /path/to/Diplom-prod
+bash scripts/rpi/install_rpi_source_service.sh /path/to/Diplom-prod <user> <group>
+```
+
+Пример:
+
+```bash
+bash scripts/rpi/install_rpi_source_service.sh /home/ykvnkm/Diplom-prod ykvnkm ykvnkm
+```
+
+Сервис будет автоматически подниматься при включении устройства:
+- unit: `rescueai-rpi-source.service`
+- порт: `9100`
+- RTSP порт: `8554`
+- видео-каталог: `/home/<user>/Documents/test_videos`
+- миссии кадров: `/home/<user>/Documents/missions/<mission_id>/images`
+- аннотации миссии: `/home/<user>/Documents/missions/<mission_id>/annotations/*.json`
+
+## НСУ-потоковый режим (миссия в realtime)
+
+В UI:
+- `Режим вычислений`: `1 - НСУ`
+- `Подрежим НСУ`: `1.2 Потоковый (RPi source)`
+- ручной ввод URL RPi не требуется (используется `rpi_source_url` из `configs/unified_runtime.yaml`)
+- кнопка `Проверить подключение` проверяет доступность source-сервиса на RPi
+- выбор миссии выполняется из каталога RPi:
+  - `Видео` -> список файлов из `test_videos`
+  - `Поток кадров` -> список папок миссий из `missions`
+
+Доступны параметры потоковой миссии:
+- `Target FPS`
+- `JPEG quality`
+- `Jitter (ms)`
+- `Realtime pacing`
+- `Drop frame on lag`
+- `Макс. длит., сек`
+
+Под капотом:
+- RaspberryPi запускает RTSP-публикатор через `rpi_source_service` (`/source/start`) и отдает `rtsp://.../live/<session_id>`.
+- Инференс и навигация выполняются на НСУ (локально в `unified_navigation_service` + `detection_service`).
+- В UI выводятся телеметрии канала: `Поток FPS (RPi)` и `Дроп кадров (RPi)`.
+- кнопка `Начать миссию` запускает поток на RPi и обработку на НСУ.
+- кнопка `Завершить миссию` останавливает поток на RPi и завершает обработку НСУ.
+
+Проверка RPi вручную:
+
+```bash
+curl -s http://<RPI_IP>:9100/health
+curl -s http://<RPI_IP>:9100/mission/catalog
+```
+
+Пробный старт RTSP-миссии вручную:
+
+```bash
+curl -s -X POST "http://<RPI_IP>:9100/source/start" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "mode":"file",
+    "source":"/home/ykvnkm/Documents/test_videos/test_4.mp4",
+    "loop":true,
+    "mission_id":"test_4",
+    "realtime":true,
+    "target_fps":8
+  }'
+```
+
+В ответе должны быть поля:
+- `backend: "rtsp"`
+- `rtsp_url: "rtsp://<RPI_IP>:8554/live/<session_id>"`
 
 ## Локальный RTSP (mediamtx + ffmpeg)
 
