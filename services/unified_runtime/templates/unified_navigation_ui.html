@@ -115,16 +115,102 @@
     .btn {
       width: 100%;
       border: none;
-      border-radius: 12px;
+      border-radius: 14px;
       padding: 12px 14px;
       background: linear-gradient(120deg, var(--accent), #fb923c);
       color: #07121e;
-      font-weight: 700;
+      font-weight: 800;
+      letter-spacing: 0.01em;
       cursor: pointer;
-      transition: transform 0.15s ease, box-shadow 0.2s ease;
-      box-shadow: 0 12px 30px rgba(249,115,22,0.45);
+      border: 1px solid rgba(255,255,255,0.18);
+      transition: transform 0.15s ease, box-shadow 0.2s ease, filter 0.2s ease;
+      box-shadow: 0 14px 34px rgba(249,115,22,0.42), inset 0 1px 0 rgba(255,255,255,0.25);
     }
-    .btn:hover { transform: translateY(-1px); }
+    .btn:hover { transform: translateY(-1px); filter: saturate(1.07); }
+    .btn:active { transform: translateY(0); }
+    #btn-start-video,
+    #btn-start-frames,
+    #btn-stop {
+      min-height: 52px;
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+    }
+    .form-label {
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.02em;
+      margin-bottom: 6px;
+      display: block;
+      font-weight: 600;
+    }
+    .select-strong {
+      width: 100%;
+      padding: 11px 13px;
+      border-radius: 11px;
+      border: 1px solid rgba(255,255,255,0.22);
+      background:
+        linear-gradient(135deg, rgba(249,115,22,0.09), rgba(15,23,42,0.82)),
+        rgba(0,0,0,0.28);
+      color: var(--text);
+      font-family: 'Space Grotesk', 'IBM Plex Sans', sans-serif;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04);
+      outline: none;
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.12s ease;
+    }
+    .select-strong:focus {
+      border-color: rgba(251,146,60,0.8);
+      box-shadow: 0 0 0 3px rgba(249,115,22,0.2), inset 0 0 0 1px rgba(255,255,255,0.06);
+    }
+    .select-strong:hover {
+      border-color: rgba(251,146,60,0.55);
+    }
+    .select-strong option {
+      font-family: 'Space Grotesk', 'IBM Plex Sans', sans-serif;
+      font-size: 14px;
+      font-weight: 600;
+      color: #0b1220;
+    }
+    .input-strong {
+      width: 100%;
+      padding: 11px 13px;
+      border-radius: 11px;
+      border: 1px solid rgba(255,255,255,0.22);
+      background:
+        linear-gradient(135deg, rgba(56,189,248,0.08), rgba(15,23,42,0.82)),
+        rgba(0,0,0,0.28);
+      color: var(--text);
+      font-family: 'Space Grotesk', 'IBM Plex Sans', sans-serif;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      outline: none;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04);
+      transition: border-color 0.16s ease, box-shadow 0.16s ease;
+    }
+    .input-strong:focus {
+      border-color: rgba(56,189,248,0.8);
+      box-shadow: 0 0 0 3px rgba(56,189,248,0.18), inset 0 0 0 1px rgba(255,255,255,0.06);
+    }
+    .file-strong {
+      width: 100%;
+      padding: 10px;
+      border-radius: 11px;
+      border: 1px solid rgba(255,255,255,0.22);
+      background:
+        linear-gradient(135deg, rgba(34,197,94,0.07), rgba(15,23,42,0.82)),
+        rgba(0,0,0,0.28);
+      color: var(--text);
+      font-family: 'IBM Plex Sans', sans-serif;
+      font-size: 13px;
+      font-weight: 600;
+    }
     .stats {
       display: grid;
       grid-template-columns: repeat(2, 1fr);
@@ -171,7 +257,20 @@
       height: 100% !important;
     }
     .plots { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 8px; }
-    #status { margin-top: 8px; color: var(--muted); min-height: 22px; }
+    #status {
+      margin-top: 10px;
+      color: #cbd5e1;
+      min-height: 22px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(148,163,184,0.2);
+      background: linear-gradient(130deg, rgba(15,23,42,0.72), rgba(2,8,23,0.7));
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03);
+    }
+    #status.status-secondary {
+      color: var(--muted);
+      font-size: 13px;
+    }
     .summary { margin-top: 10px; padding: 10px 12px; border-radius: 12px; background: rgba(34,197,94,0.12); border: 1px solid rgba(34,197,94,0.25); color: #bbf7d0; display: none; }
     canvas, .plotly-graph-div { width: 100% !important; height: 300px !important; }
     @media (max-width: 1100px) {
@@ -188,55 +287,30 @@
     <div class="card">
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:10px;">
         <div>
-          <label style="color:var(--muted); font-size:12px;">Режим вычислений</label>
-          <select id="run-mode" style="width:100%; padding:10px; border-radius:10px; background:rgba(0,0,0,0.25); color:var(--text); border:1px solid rgba(255,255,255,0.15);">
-            <option value="nsu">1 - НСУ (локальный инференс)</option>
-            <option value="edge">2 - Edge (заглушка)</option>
+          <label class="form-label">Режим вычислений</label>
+          <select id="run-mode" class="select-strong">
+            <option value="nsu">НСУ</option>
+            <option value="edge">Edge</option>
           </select>
         </div>
         <div>
-          <label style="color:var(--muted); font-size:12px;">Подрежим НСУ</label>
-          <select id="nsu-channel" style="width:100%; padding:10px; border-radius:10px; background:rgba(0,0,0,0.25); color:var(--text); border:1px solid rgba(255,255,255,0.15);">
-            <option value="local">1.1 Локальный</option>
-            <option value="stream">1.2 Потоковый (RPi source)</option>
+          <label class="form-label">Подрежим НСУ</label>
+          <select id="nsu-channel" class="select-strong">
+            <option value="local">Стендовый</option>
+            <option value="stream">Потоковый</option>
           </select>
         </div>
       </div>
       <div id="rpi-row" style="display:none; margin-bottom:12px;">
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
-          <div style="font-size:12px; color:var(--muted);">Подключение к RaspberryPi: <strong id="rpi-conn-status" style="color:var(--text);">не проверено</strong></div>
-          <button id="btn-check-rpi" type="button" class="btn" style="width:auto; padding:8px 12px;">Проверить подключение</button>
-        </div>
-      </div>
-      <div id="stream-mission-panel" style="display:none; margin-bottom:12px; padding:10px; border-radius:12px; border:1px solid rgba(255,255,255,0.12); background:rgba(0,0,0,0.18);">
-        <div style="font-weight:700; font-size:13px; margin-bottom:8px;">Потоковая миссия (RPi источник)</div>
-        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
-          <div>
-            <label style="display:block; color:var(--muted); font-size:12px; margin-bottom:4px;">Target FPS</label>
-            <input type="number" id="stream-target-fps" value="6" min="0" step="0.1" style="width:100%; padding:10px; border-radius:9px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.25); color:var(--text);" />
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,0.14); background:rgba(0,0,0,0.22);">
+          <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start; text-align:left;">
+            <div style="font-size:12px; color:var(--muted);">Состояние канала RaspberryPi</div>
+            <div style="font-size:13px; color:var(--text); text-align:left; width:100%;">
+              Статус: <strong id="rpi-conn-status" style="color:#fbbf24;">не проверено</strong>
+            </div>
+            <div id="rpi-catalog-summary" style="font-size:12px; color:var(--muted); text-align:left; width:100%;"></div>
           </div>
-          <div>
-            <label style="display:block; color:var(--muted); font-size:12px; margin-bottom:4px;">JPEG quality</label>
-            <input type="number" id="stream-jpeg-quality" value="80" min="10" max="100" step="1" style="width:100%; padding:10px; border-radius:9px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.25); color:var(--text);" />
-          </div>
-          <div>
-            <label style="display:block; color:var(--muted); font-size:12px; margin-bottom:4px;">Jitter (ms)</label>
-            <input type="number" id="stream-jitter-ms" value="0" min="0" step="1" style="width:100%; padding:10px; border-radius:9px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.25); color:var(--text);" />
-          </div>
-          <div>
-            <label style="display:block; color:var(--muted); font-size:12px; margin-bottom:4px;">Макс. длит., сек</label>
-            <input type="number" id="stream-max-duration" value="0" min="0" step="1" style="width:100%; padding:10px; border-radius:9px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.25); color:var(--text);" />
-          </div>
-        </div>
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-top:10px;">
-          <label style="display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px;">
-            <input type="checkbox" id="stream-realtime" checked />
-            Realtime pacing
-          </label>
-          <label style="display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px;">
-            <input type="checkbox" id="stream-drop-if-lag" checked />
-            Drop frame on lag
-          </label>
+          <button id="btn-check-rpi" type="button" class="btn" style="width:auto; padding:8px 12px;">Проверить канал</button>
         </div>
       </div>
       <div style="display:flex; gap:8px; margin-bottom:12px;">
@@ -246,7 +320,7 @@
       </div>
 
       <div id="panel-file">
-        <h3>Стендовая обработка видео</h3>
+        <h3 id="video-panel-title">Стендовая обработка видео</h3>
         <form id="upload-form">
           <label class="upload" id="upload-local-wrap">
             <input type="file" id="file-input" name="file" accept="video/*" />
@@ -254,8 +328,9 @@
             <small style="color: var(--muted);">Поддерживаются mp4/mov/avi</small>
           </label>
           <div id="upload-remote-wrap" style="display:none; margin-bottom:10px;">
-            <label style="display:block; color:var(--muted); font-size:13px; margin-bottom:6px;">Видео-миссия на RaspberryPi</label>
-            <select id="video-mission-select" style="width:100%; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.3); color:var(--text); font-weight:600;"></select>
+            <label style="display:block; color:var(--muted); font-size:13px; margin-bottom:6px;">Выбор миссии (RaspberryPi)</label>
+            <select id="video-mission-select" class="select-strong"></select>
+            <small style="color:var(--muted); line-height:1.4;">Выберите операцию из каталога для запуска потока в реальном времени.</small>
           </div>
       <div style="display:flex; align-items:center; gap:10px; margin:10px 0 4px;">
         <label class="switch">
@@ -269,21 +344,18 @@
       </div>
       <div style="display:flex; gap:10px; margin:10px 0;">
         <div style="flex:1;">
-          <label style="color:var(--muted); font-size:12px;">Детектор</label>
-          <select id="model-file" style="width:100%; padding:10px; border-radius:10px; background:rgba(0,0,0,0.25); color:var(--text); border:1px solid rgba(255,255,255,0.15);">
+          <label class="form-label">Детектор</label>
+          <select id="model-file" class="select-strong">
             <option value="yolov8n_baseline_multiscale">YOLOv8n multi-scale</option>
             <option value="nanodet">NanoDet Plus 1.5x</option>
           </select>
         </div>
       </div>
-      <div style="margin:10px 0;">
-        <label style="color:var(--muted); font-size:12px;">Навигация</label>
-        <select id="marker-mode-file" style="width:100%; padding:10px; border-radius:10px; background:rgba(0,0,0,0.25); color:var(--text); border:1px solid rgba(255,255,255,0.15); display:none;">
-          <option value="auto" selected>Авто (искать маркер при взлёте)</option>
-          <option value="marker">Маркер при взлёте (текущий алгоритм)</option>
-          <option value="no_marker">Без маркера (ORB, пиксели)</option>
-        </select>
-      </div>
+      <select id="marker-mode-file" style="display:none;">
+        <option value="auto" selected>Авто</option>
+        <option value="marker">Маркер</option>
+        <option value="no_marker">Без маркера</option>
+      </select>
       <div style="display:flex; align-items:center; gap:10px; margin:10px 0 4px;">
         <label class="switch">
           <input type="checkbox" id="save-video-file" />
@@ -294,7 +366,7 @@
           <div style="color:var(--muted); font-size:12px;">Сохранение обработанного ролика в отчет</div>
         </div>
       </div>
-      <div style="display:flex; align-items:center; gap:10px; margin:10px 0 4px;">
+      <div id="demo-loop-video-wrap" style="display:flex; align-items:center; gap:10px; margin:10px 0 4px;">
         <label class="switch">
           <input type="checkbox" id="demo-loop-video" />
           <span class="slider"></span>
@@ -315,7 +387,7 @@
         <form id="rtsp-form">
           <div style="margin-bottom:12px;">
             <label style="display:block; color:var(--muted); font-size:13px; margin-bottom:6px;">RTSP URL</label>
-            <input type="text" id="rtsp-url" name="rtsp_url" placeholder="rtsp://127.0.0.1:8554/live" style="width:100%; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.3); color:var(--text); font-weight:600;" />
+            <input type="text" id="rtsp-url" name="rtsp_url" placeholder="rtsp://127.0.0.1:8554/live" class="input-strong" />
           </div>
       <div style="display:flex; align-items:center; gap:10px; margin:10px 0 4px;">
         <label class="switch">
@@ -329,21 +401,18 @@
       </div>
       <div style="display:flex; gap:10px; margin:10px 0;">
         <div style="flex:1;">
-          <label style="color:var(--muted); font-size:12px;">Детектор</label>
-          <select id="model-rtsp" style="width:100%; padding:10px; border-radius:10px; background:rgba(0,0,0,0.25); color:var(--text); border:1px solid rgba(255,255,255,0.15);">
+          <label class="form-label">Детектор</label>
+          <select id="model-rtsp" class="select-strong">
             <option value="yolov8n_baseline_multiscale">YOLOv8n multi-scale</option>
             <option value="nanodet">NanoDet Plus 1.5x</option>
           </select>
         </div>
       </div>
-      <div style="margin:10px 0;">
-        <label style="color:var(--muted); font-size:12px;">Навигация</label>
-        <select id="marker-mode-rtsp" style="width:100%; padding:10px; border-radius:10px; background:rgba(0,0,0,0.25); color:var(--text); border:1px solid rgba(255,255,255,0.15); display:none;">
-          <option value="auto" selected>Авто (искать маркер при взлёте)</option>
-          <option value="marker">Маркер при взлёте (текущий алгоритм)</option>
-          <option value="no_marker">Без маркера (ORB, пиксели)</option>
-        </select>
-      </div>
+      <select id="marker-mode-rtsp" style="display:none;">
+        <option value="auto" selected>Авто</option>
+        <option value="marker">Маркер</option>
+        <option value="no_marker">Без маркера</option>
+      </select>
       <div style="display:flex; align-items:center; gap:10px; margin:10px 0 4px;">
         <label class="switch">
           <input type="checkbox" id="save-video-rtsp" />
@@ -360,19 +429,20 @@
         </form>
       </div>
       <div id="panel-frames" style="display:none;">
-        <h3>Стендовая обработка кадров</h3>
+        <h3 id="frames-panel-title">Стендовая обработка кадров</h3>
         <form id="frames-form">
-          <div style="margin-bottom:12px;">
+          <div id="frames-local-path-wrap" style="margin-bottom:12px;">
             <label style="display:block; color:var(--muted); font-size:13px; margin-bottom:6px;">Путь к потоку кадров</label>
-            <input type="text" id="frames-dir" value="/Users/ykvnkm/Desktop/Diplom/public/images" style="width:100%; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.3); color:var(--text); font-weight:600;" />
+            <input type="text" id="frames-dir" value="public/images" class="input-strong" />
           </div>
           <div id="frames-mission-wrap" style="display:none; margin-bottom:12px;">
-            <label style="display:block; color:var(--muted); font-size:13px; margin-bottom:6px;">Фото-миссия на RaspberryPi</label>
-            <select id="frames-mission-select" style="width:100%; padding:12px 14px; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.3); color:var(--text); font-weight:600;"></select>
+            <label style="display:block; color:var(--muted); font-size:13px; margin-bottom:6px;">Выбор миссии (RaspberryPi)</label>
+            <select id="frames-mission-select" class="select-strong"></select>
+            <small style="color:var(--muted); line-height:1.4;">Данные миссии подтягиваются автоматически из каталога операции.</small>
           </div>
-          <div style="margin-bottom:12px;">
+          <div id="frames-coco-wrap" style="margin-bottom:12px;">
             <label style="display:block; color:var(--muted); font-size:13px; margin-bottom:6px;">COCO аннотации (.json)</label>
-            <input type="file" id="frames-coco-file" accept=".json,application/json" style="width:100%; padding:10px; border-radius:10px; border:1px solid rgba(255,255,255,0.2); background:rgba(0,0,0,0.3); color:var(--text);" />
+            <input type="file" id="frames-coco-file" accept=".json,application/json" class="file-strong" />
             <small style="color:var(--muted); line-height:1.4;">Если файл не выбран, COCO будет найден автоматически в папке <code>annotations</code> рядом с папкой кадров (берется первый <code>.json</code>).</small>
           </div>
           <div style="margin:8px 0 12px; color:var(--muted); font-size:13px;">
@@ -380,6 +450,8 @@
           </div>
           <select id="marker-mode-frames" style="display:none;">
             <option value="auto" selected>Авто</option>
+            <option value="marker">Маркер</option>
+            <option value="no_marker">Без маркера</option>
           </select>
           <div style="display:flex; align-items:center; justify-content:space-between; margin:8px 0 14px;">
             <label style="color:var(--muted); font-size:12px; margin:0;">Сохранить алерты</label>
@@ -462,16 +534,15 @@
     const nsuChannel = document.getElementById('nsu-channel');
     const rpiRow = document.getElementById('rpi-row');
     const rpiConnStatus = document.getElementById('rpi-conn-status');
+    const rpiCatalogSummary = document.getElementById('rpi-catalog-summary');
     const checkRpiBtn = document.getElementById('btn-check-rpi');
-    const streamMissionPanel = document.getElementById('stream-mission-panel');
-    const streamRealtime = document.getElementById('stream-realtime');
-    const streamTargetFps = document.getElementById('stream-target-fps');
-    const streamJitterMs = document.getElementById('stream-jitter-ms');
-    const streamDropIfLag = document.getElementById('stream-drop-if-lag');
-    const streamMaxDuration = document.getElementById('stream-max-duration');
-    const streamJpegQuality = document.getElementById('stream-jpeg-quality');
+    const videoPanelTitle = document.getElementById('video-panel-title');
+    const framesPanelTitle = document.getElementById('frames-panel-title');
+    const demoLoopVideoWrap = document.getElementById('demo-loop-video-wrap');
     const uploadLocalWrap = document.getElementById('upload-local-wrap');
     const uploadRemoteWrap = document.getElementById('upload-remote-wrap');
+    const framesLocalPathWrap = document.getElementById('frames-local-path-wrap');
+    const framesCocoWrap = document.getElementById('frames-coco-wrap');
     const videoMissionSelect = document.getElementById('video-mission-select');
     const framesMissionWrap = document.getElementById('frames-mission-wrap');
     const framesMissionSelect = document.getElementById('frames-mission-select');
@@ -545,10 +616,14 @@
       const stream = runMode.value === 'nsu' && nsuChannel.value === 'stream';
       const localNsu = runMode.value === 'nsu' && nsuChannel.value === 'local';
       rpiRow.style.display = stream ? 'block' : 'none';
-      streamMissionPanel.style.display = stream ? 'block' : 'none';
       uploadLocalWrap.style.display = localNsu ? 'block' : 'none';
       uploadRemoteWrap.style.display = localNsu ? 'none' : 'block';
       framesMissionWrap.style.display = stream ? 'block' : 'none';
+      framesLocalPathWrap.style.display = stream ? 'none' : 'block';
+      framesCocoWrap.style.display = stream ? 'none' : 'block';
+      demoLoopVideoWrap.style.display = stream ? 'none' : 'flex';
+      videoPanelTitle.textContent = stream ? 'Потоковая обработка миссии' : 'Стендовая обработка видео';
+      framesPanelTitle.textContent = stream ? 'Потоковая обработка миссии' : 'Стендовая обработка кадров';
       tabRtsp.style.display = stream ? 'none' : 'inline-block';
       rtspInput.disabled = stream;
       if (stream && tabRtsp.classList.contains('active')) {
@@ -557,7 +632,7 @@
       document.getElementById('btn-start-video').textContent = stream ? 'Начать миссию' : 'Старт обработки';
       document.getElementById('btn-start-frames').textContent = stream ? 'Начать миссию' : 'Старт по кадрам';
       if (stream) {
-        statusBox.textContent = 'Потоковый режим: проверьте подключение и выберите миссию.';
+        statusBox.textContent = 'Потоковый режим: выберите миссию и запустите обработку.';
       }
     }
 
@@ -566,18 +641,23 @@
         const res = await fetch('/stream/connection');
         const data = await res.json();
         if (data.ok) {
-          rpiConnStatus.textContent = 'подключено';
+          rpiConnStatus.textContent = 'канал активен';
           rpiConnStatus.style.color = '#86efac';
+          const health = (data && data.health) || {};
+          const active = Number(health.active_sessions || 0);
+          rpiCatalogSummary.textContent = `активных сессий: ${active}`;
           if (showStatus) statusBox.textContent = 'Подключение к RaspberryPi установлено.';
           return true;
         }
-        rpiConnStatus.textContent = 'недоступно';
+        rpiConnStatus.textContent = 'канал недоступен';
         rpiConnStatus.style.color = '#fca5a5';
+        rpiCatalogSummary.textContent = '';
         if (showStatus) statusBox.textContent = data.detail || 'RaspberryPi недоступен';
         return false;
       } catch (e) {
-        rpiConnStatus.textContent = 'ошибка';
+        rpiConnStatus.textContent = 'ошибка канала';
         rpiConnStatus.style.color = '#fca5a5';
+        rpiCatalogSummary.textContent = '';
         if (showStatus) statusBox.textContent = 'Ошибка проверки подключения к RaspberryPi';
         return false;
       }
@@ -589,16 +669,31 @@
       videoMissionSelect.innerHTML = '';
       framesMissionSelect.innerHTML = '';
 
+      const vPlaceholder = document.createElement('option');
+      vPlaceholder.value = '';
+      vPlaceholder.textContent = videos.length ? 'Выберите миссию' : 'Миссии не найдены';
+      vPlaceholder.disabled = true;
+      vPlaceholder.selected = true;
+      videoMissionSelect.appendChild(vPlaceholder);
+
+      const fPlaceholder = document.createElement('option');
+      fPlaceholder.value = '';
+      fPlaceholder.textContent = missions.length ? 'Выберите миссию' : 'Миссии не найдены';
+      fPlaceholder.disabled = true;
+      fPlaceholder.selected = true;
+      framesMissionSelect.appendChild(fPlaceholder);
+
       for (const v of videos) {
         const opt = document.createElement('option');
         opt.value = String(v.id || '');
-        opt.textContent = v.name ? `${v.id} - ${v.name}` : String(v.id || '');
+        opt.textContent = v.name ? `Миссия ${v.id}: ${v.name}` : `Миссия ${String(v.id || '')}`;
         videoMissionSelect.appendChild(opt);
       }
       for (const m of missions) {
         const opt = document.createElement('option');
         opt.value = String(m.id || '');
-        opt.textContent = String(m.id || '');
+        const anns = m.annotations_json ? 'annotations: ok' : 'annotations: n/a';
+        opt.textContent = `Миссия ${String(m.id || '')} (${anns})`;
         framesMissionSelect.appendChild(opt);
       }
     }
@@ -620,11 +715,13 @@
         };
         fillMissionSelects();
         if (showStatus) {
-          statusBox.textContent = `Каталог загружен: видео ${streamCatalog.videos.length}, миссий ${streamCatalog.missions.length}`;
+          statusBox.innerHTML = `<span style="color:var(--muted); font-size:13px;">Каталог миссий загружен: источники ${streamCatalog.videos.length}, потоки ${streamCatalog.missions.length}</span>`;
         }
+        rpiCatalogSummary.textContent = `видео: ${streamCatalog.videos.length}, фото: ${streamCatalog.missions.length}`;
         return true;
       } catch (e) {
         statusBox.textContent = 'Ошибка загрузки каталога миссий';
+        rpiCatalogSummary.textContent = '';
         return false;
       }
     }
@@ -660,17 +757,6 @@
       fpMinuteEl.textContent = '-';
       summaryEl.textContent = '';
       summaryEl.style.display = 'none';
-    }
-
-    function appendStreamOptions(fd) {
-      const stream = runMode.value === 'nsu' && nsuChannel.value === 'stream';
-      if (!stream) return;
-      fd.append('stream_realtime', streamRealtime.checked ? 'true' : 'false');
-      fd.append('stream_target_fps', String(Number(streamTargetFps.value || 0)));
-      fd.append('stream_jitter_ms', String(Number(streamJitterMs.value || 0)));
-      fd.append('stream_drop_if_lag', streamDropIfLag.checked ? 'true' : 'false');
-      fd.append('stream_max_duration_sec', String(Number(streamMaxDuration.value || 0)));
-      fd.append('stream_jpeg_quality', String(Number(streamJpegQuality.value || 80)));
     }
 
     // Init Plotly charts with reusable layouts
@@ -737,10 +823,10 @@
         return;
       }
       if (streamMode && !videoMissionSelect.value) {
-        statusBox.textContent = 'Выберите видео-миссию из каталога';
+        statusBox.textContent = 'Выберите миссию из каталога';
         return;
       }
-      statusBox.textContent = localNsu ? 'Загружаю видео...' : 'Запускаю удаленный видеоисточник...';
+      statusBox.textContent = localNsu ? 'Загружаю видео...' : 'Запускаю удаленный поток миссии...';
       summaryEl.style.display = 'none';
       manualStopRequested = false;
       if (autoRestartTimer) {
@@ -760,7 +846,6 @@
       fd.append('marker_mode', markerModeFile.value);
       fd.append('run_mode', runMode.value);
       fd.append('nsu_channel', nsuChannel.value);
-      appendStreamOptions(fd);
       let res;
       if (!streamMode && runMode.value === 'nsu') {
         res = await fetch('/upload', { method: 'POST', body: fd });
@@ -821,7 +906,6 @@
       fd.append('marker_mode', markerModeRtsp.value);
       fd.append('run_mode', runMode.value);
       fd.append('nsu_channel', nsuChannel.value);
-      appendStreamOptions(fd);
       statusBox.textContent = 'Запускаю RTSP поток: ' + url;
       let res;
       res = await fetch('/start_rtsp', { method: 'POST', body: fd });
@@ -853,7 +937,7 @@
         return;
       }
       if (streamMode && !framesMissionSelect.value) {
-        statusBox.textContent = 'Выберите фото-миссию из каталога';
+        statusBox.textContent = 'Выберите миссию из каталога';
         return;
       }
       summaryEl.style.display = 'none';
@@ -863,7 +947,7 @@
         autoRestartTimer = null;
       }
       let res;
-      statusBox.textContent = streamMode ? 'Запускаю фото-миссию...' : 'Запускаю поток кадров из папки...';
+      statusBox.textContent = streamMode ? 'Запускаю поток миссии...' : 'Запускаю поток кадров из папки...';
       if (streamMode) {
         res = await fetch('/stream/start_mission', {
           method: 'POST',
@@ -899,7 +983,7 @@
       }
       const data = await res.json();
       statusBox.textContent = streamMode
-        ? `Фото-миссия запущена: ${data.mission_id || framesMissionSelect.value}.`
+        ? `Миссия запущена: ${data.mission_id || framesMissionSelect.value}.`
         : `Источник кадров получен (${data.mode || 'frames'}), детекция ${data.detect ? 'включена' : 'отключена'}.`;
       if (!streamMode) statusBox.textContent += ` Конфиг: ${data.applied_config || 'nsu_frames_yolov8n_alert_contract'}.`;
       if (data.coco_gt) {
@@ -913,11 +997,13 @@
 
     stopBtn.onclick = async () => {
       if (!currentSession) {
+        statusBox.classList.remove('status-secondary');
         statusBox.textContent = 'Нет активной сессии для остановки.';
         return;
       }
       stopBtn.disabled = true;
       statusBox.textContent = 'Останавливаю обработку...';
+      statusBox.classList.add('status-secondary');
       manualStopRequested = true;
       if (autoRestartTimer) {
         clearTimeout(autoRestartTimer);
@@ -926,6 +1012,7 @@
       try {
         await fetch(`/stop/${currentSession}`, { method: 'POST' });
       } catch (e) {
+        statusBox.classList.remove('status-secondary');
         statusBox.textContent = 'Ошибка остановки';
       }
     };
@@ -939,13 +1026,20 @@
       currentSession = sessionId;
       wsTerminal = false;
       ws = new WebSocket(`ws://${location.host}/ws/process/${sessionId}`);
-      ws.onopen = () => statusBox.textContent = 'Обработка запущена...';
+      ws.onopen = () => {
+        statusBox.classList.remove('status-secondary');
+        statusBox.textContent = 'Обработка запущена...';
+      };
       ws.onclose = () => {
         if (!wsTerminal) statusBox.textContent = 'Сессия завершена';
+        statusBox.classList.remove('status-secondary');
         stopBtn.disabled = true;
         currentSession = null;
       };
-      ws.onerror = () => statusBox.textContent = 'Ошибка WebSocket';
+      ws.onerror = () => {
+        statusBox.classList.remove('status-secondary');
+        statusBox.textContent = 'Ошибка WebSocket';
+      };
       ws.onmessage = (event) => {
         const payload = JSON.parse(event.data);
         if (payload.error) {

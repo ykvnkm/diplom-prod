@@ -6,20 +6,27 @@ services:
     image: rescueai/unified:latest
     container_name: rescueai-unified
     ports:
-      - "8010:8010"
+      - "${UNIFIED_UI_PORT:-8010}:8010"
     environment:
-      UNIFIED_DETECTION_URL: "http://127.0.0.1:8001"
-      DET_DEVICE: "cpu"
-      NANODET_ONNX: "0"
-      REQUIRE_NANODET_PTH: "1"
-      REQUIRE_NANODET_ONNX: "1"
-      REQUIRE_YOLO_ONNX: "1"
-      NSU_LOCAL_FRAMES_DIR: "/app/public/images"
-      NSU_LOCAL_FRAMES_COCO: "/app/public/annotations/val_from_labels.json"
-      YOLO_WEIGHTS_URL: "https://github.com/ykvnkm/rescueai-models/releases/download/v1/yolov8n_baseline_multiscale.pt"
-      YOLO_ONNX_URL: "https://github.com/ykvnkm/rescueai-models/releases/download/v1.1.0-onnx/yolov8n_baseline_multiscale.onnx"
-      NANODET_PTH_URL: "https://github.com/ykvnkm/rescueai-models/releases/download/v1/nanodet-plus-m-1.5x_416.pth"
-      NANODET_ONNX_URL: "https://github.com/ykvnkm/rescueai-models/releases/download/v1.1.0-onnx/nanodet-plus-m-1.5x_416.onnx"
+      UNIFIED_DETECTION_URL: "${UNIFIED_DETECTION_URL:-http://127.0.0.1:8001}"
+      UNIFIED_RPI_SOURCE_URL: "${UNIFIED_RPI_SOURCE_URL:-http://127.0.0.1:9100}"
+      DET_DEVICE: "${DET_DEVICE:-cpu}"
+      NANODET_ONNX: "${NANODET_ONNX:-0}"
+      REQUIRE_NANODET_PTH: "${REQUIRE_NANODET_PTH:-1}"
+      REQUIRE_NANODET_ONNX: "${REQUIRE_NANODET_ONNX:-1}"
+      REQUIRE_YOLO_ONNX: "${REQUIRE_YOLO_ONNX:-1}"
+      NSU_LOCAL_FRAMES_DIR: "${NSU_LOCAL_FRAMES_DIR:-/app/public/images}"
+      NSU_LOCAL_FRAMES_COCO: "${NSU_LOCAL_FRAMES_COCO:-/app/public/annotations/val_from_labels.json}"
+      YOLO_WEIGHTS_URL: "${YOLO_WEIGHTS_URL:-}"
+      YOLO_ONNX_URL: "${YOLO_ONNX_URL:-}"
+      NANODET_PTH_URL: "${NANODET_PTH_URL:-}"
+      NANODET_ONNX_URL: "${NANODET_ONNX_URL:-}"
+      RPI_VIDEO_DIR: "${RPI_VIDEO_DIR:-/home/pi/Documents/test_videos}"
+      RPI_MISSIONS_DIR: "${RPI_MISSIONS_DIR:-/home/pi/Documents/missions}"
+      RPI_RTSP_HOST: "${RPI_RTSP_HOST:-}"
+      RPI_RTSP_PORT: "${RPI_RTSP_PORT:-8554}"
+      RPI_RTSP_PATH_PREFIX: "${RPI_RTSP_PATH_PREFIX:-live}"
+      RPI_RTSP_ENABLE: "${RPI_RTSP_ENABLE:-1}"
 
     volumes:
       - rescueai_models:/app/models

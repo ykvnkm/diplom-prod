@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import datetime
+import fcntl
 import io
 import json
 import os
+import shutil
+import subprocess
 import time
 import uuid
 import zipfile
@@ -32,6 +35,32 @@ try:
     import yaml
 except Exception:  # pragma: no cover
     yaml = None
+
+
+def _load_env_file() -> None:
+    # Support local runs (`python -m uvicorn ...`) without manual `export`.
+    env_path = Path(__file__).resolve().parents[2] / ".env"
+    if not env_path.exists():
+        return
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        val = value.strip()
+        if len(val) >= 2 and ((val[0] == val[-1] == '"') or (val[0] == val[-1] == "'")):
+            val = val[1:-1]
+        os.environ[key] = val
+
+
+_load_env_file()
 
 
 UPLOAD_DIR = Path("runtime/unified/uploads")
@@ -93,21 +122,22 @@ CONFIG_PATH = Path("configs/unified_runtime.yaml")
 UI_TEMPLATE_PATH = Path("services/unified_runtime/templates/unified_navigation_ui.html")
 NSU_LOCAL_FRAMES_DIR = Path(os.getenv("NSU_LOCAL_FRAMES_DIR", "public/images"))
 NSU_LOCAL_VIDEO_PRESET = "nsu_video_yolov8n_fast"
-STREAM_UI_MAX_FPS = float(os.getenv("STREAM_UI_MAX_FPS", "8.0"))
-STREAM_UI_JPEG_QUALITY = int(os.getenv("STREAM_UI_JPEG_QUALITY", "55"))
+STREAM_UI_MAX_FPS = float(os.getenv("STREAM_UI_MAX_FPS", "2.0"))
+STREAM_UI_JPEG_QUALITY = int(os.getenv("STREAM_UI_JPEG_QUALITY", "50"))
 STREAM_UI_MAX_WIDTH = int(os.getenv("STREAM_UI_MAX_WIDTH", "640"))
 STREAM_PLOT_EVERY_N = int(os.getenv("STREAM_PLOT_EVERY_N", "30"))
 STREAM_UI_EMIT_STRIDE = max(1, int(os.getenv("STREAM_UI_EMIT_STRIDE", "2")))
 STREAM_VIDEO_TARGET_FPS = float(os.getenv("STREAM_VIDEO_TARGET_FPS", "10.0"))
 STREAM_RPI_JPEG_QUALITY = int(os.getenv("STREAM_RPI_JPEG_QUALITY", "65"))
-STREAM_VIDEO_DETECTION_STRIDE = max(1, int(os.getenv("STREAM_VIDEO_DETECTION_STRIDE", "3")))
-STREAM_DET_MAX_WIDTH = max(320, int(os.getenv("STREAM_DET_MAX_WIDTH", "512")))
-STREAM_DET_IMGSZ = max(320, int(os.getenv("STREAM_DET_IMGSZ", "416")))
+STREAM_VIDEO_DETECTION_STRIDE = max(1, int(os.getenv("STREAM_VIDEO_DETECTION_STRIDE", "6")))
+STREAM_DET_MAX_WIDTH = max(320, int(os.getenv("STREAM_DET_MAX_WIDTH", "352")))
+STREAM_DET_IMGSZ = max(320, int(os.getenv("STREAM_DET_IMGSZ", "640")))
 STREAM_DET_MAX_DET = max(1, int(os.getenv("STREAM_DET_MAX_DET", "120")))
 STREAM_USE_RAW_VIDEO = str(os.getenv("STREAM_USE_RAW_VIDEO", "1")).strip().lower() in ("1", "true", "yes", "on")
 STREAM_PREFER_RTSP = str(os.getenv("STREAM_PREFER_RTSP", "1")).strip().lower() in ("1", "true", "yes", "on")
-STREAM_NAV_WIDTH = max(320, int(os.getenv("STREAM_NAV_WIDTH", "640")))
-STREAM_NAV_HEIGHT = max(240, int(os.getenv("STREAM_NAV_HEIGHT", "360")))
+STREAM_NAV_WIDTH = max(320, int(os.getenv("STREAM_NAV_WIDTH", "480")))
+STREAM_NAV_HEIGHT = max(240, int(os.getenv("STREAM_NAV_HEIGHT", "270")))
+STREAM_REMOTE_INIT_TIMEOUT_SEC = float(os.getenv("STREAM_REMOTE_INIT_TIMEOUT_SEC", "90.0"))
 
 ALLOWED_NSU_MODELS = {
     "yolov8n_baseline_multiscale": "yolov8n_baseline_multiscale",
@@ -136,9 +166,25 @@ class SourceProfile:
 
 def source_profile(kind: str, run_mode: str = "nsu", nsu_channel: str = "local", detect_enabled: bool = True) -> SourceProfile:
     if run_mode == "nsu" and nsu_channel == "stream" and kind == "video":
+        if not detect_enabled:
+            # Потоковый режим без детекции должен совпадать с локальным marker-пайплайном:
+            # траектория на том же разрешении и без троттлинга UI-рендера.
+            return SourceProfile(
+                detection_stride=1,
+                emit_only_detections=False,
+                emit_stride=1,
+                emit_max_fps=None,
+                ui_jpeg_quality=80,
+                ui_max_width=None,
+                force_marker_mode="marker",
+                plot_every_n_frames=STREAM_PLOT_EVERY_N,
+                detect_max_width=None,
+                nav_width=None,
+                nav_height=None,
+            )
         return SourceProfile(
             detection_stride=max(STREAM_VIDEO_DETECTION_STRIDE, 3),
-            emit_only_detections=bool(detect_enabled),
+            emit_only_detections=True,
             emit_stride=STREAM_UI_EMIT_STRIDE,
             emit_max_fps=STREAM_UI_MAX_FPS,
             ui_jpeg_quality=STREAM_UI_JPEG_QUALITY,
@@ -150,9 +196,23 @@ def source_profile(kind: str, run_mode: str = "nsu", nsu_channel: str = "local",
             nav_height=STREAM_NAV_HEIGHT,
         )
     if run_mode == "nsu" and nsu_channel == "stream" and kind == "rtsp":
+        if not detect_enabled:
+            return SourceProfile(
+                detection_stride=1,
+                emit_only_detections=False,
+                emit_stride=1,
+                emit_max_fps=None,
+                ui_jpeg_quality=80,
+                ui_max_width=None,
+                force_marker_mode="marker",
+                plot_every_n_frames=STREAM_PLOT_EVERY_N,
+                detect_max_width=None,
+                nav_width=None,
+                nav_height=None,
+            )
         return SourceProfile(
             detection_stride=3,
-            emit_only_detections=bool(detect_enabled),
+            emit_only_detections=True,
             emit_stride=STREAM_UI_EMIT_STRIDE,
             emit_max_fps=STREAM_UI_MAX_FPS,
             ui_jpeg_quality=STREAM_UI_JPEG_QUALITY,
@@ -230,9 +290,11 @@ def _apply_mode_flags(overrides: Dict[str, bool]):
 
 
 def _load_config() -> Dict:
+    env_detection_url = os.getenv("UNIFIED_DETECTION_URL", "").strip()
+    env_rpi_source_url = os.getenv("UNIFIED_RPI_SOURCE_URL", "").strip()
     defaults = {
-        "detection_url": os.getenv("UNIFIED_DETECTION_URL", DETECTION_URL),
-        "rpi_source_url": RPI_SOURCE_URL,
+        "detection_url": env_detection_url or DETECTION_URL,
+        "rpi_source_url": env_rpi_source_url or RPI_SOURCE_URL,
         "ui_template_path": str(UI_TEMPLATE_PATH),
         "mode_flags": {},
         "debug_presets": {},
@@ -245,9 +307,15 @@ def _load_config() -> Dict:
     mode_flags = loaded.get("mode_flags", {})
     if not isinstance(mode_flags, dict):
         mode_flags = {}
+    detection_url = str(loaded.get("detection_url", defaults["detection_url"]))
+    rpi_source_url = str(loaded.get("rpi_source_url", defaults["rpi_source_url"]))
+    if env_detection_url:
+        detection_url = env_detection_url
+    if env_rpi_source_url:
+        rpi_source_url = env_rpi_source_url
     return {
-        "detection_url": str(loaded.get("detection_url", defaults["detection_url"])),
-        "rpi_source_url": str(loaded.get("rpi_source_url", defaults["rpi_source_url"])),
+        "detection_url": detection_url,
+        "rpi_source_url": rpi_source_url,
         "ui_template_path": str(loaded.get("ui_template_path", defaults["ui_template_path"])),
         "mode_flags": mode_flags,
         "debug_presets": loaded.get("debug_presets", {}),
@@ -351,12 +419,46 @@ class OpenCVSource:
         self.source = source
         self.mode = mode
         self.loop_input = loop_input
-        self.cap = cv2.VideoCapture(str(source))
+        self._capture_source = str(source)
+        self.cap = None
         self._prefetched_frame: Optional[np.ndarray] = None
+        self._open_capture_with_warmup()
+        
+    def _open_capture_with_warmup(self):
+        # Для RTSP принудительно просим ffmpeg использовать TCP-транспорт.
+        # Это заметно стабильнее в локальной сети с RaspberryPi.
+        if self.mode == "rtsp":
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|stimeout;8000000|max_delay;500000"
+            self._capture_source = self._rtsp_tcp_url(self.source)
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                # На части сборок OpenCV CAP_FFMPEG "by name" не работает.
+                # Поэтому сначала пробуем дефолтный backend, затем FFMPEG.
+                cap = cv2.VideoCapture(str(self._capture_source))
+                if cap is None or not cap.isOpened():
+                    if cap is not None:
+                        cap.release()
+                    cap = cv2.VideoCapture(str(self._capture_source), cv2.CAP_FFMPEG)
+                if cap is None or not cap.isOpened():
+                    if cap is not None:
+                        cap.release()
+                    time.sleep(0.3)
+                    continue
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    self.cap = cap
+                    self._prefetched_frame = frame
+                    return
+                cap.release()
+                time.sleep(0.3)
+            self.cap = cv2.VideoCapture(str(self._capture_source))
+            return
+
+        self.cap = cv2.VideoCapture(str(self.source))
         # Для HTTP file-stream сразу проверяем, что читается первый кадр.
         # Иначе откатимся на альтернативный источник выше по стеку.
-        src_l = str(source).lower()
-        if mode == "file" and (src_l.startswith("http://") or src_l.startswith("https://")):
+        src_l = str(self.source).lower()
+        if self.mode == "file" and (src_l.startswith("http://") or src_l.startswith("https://")):
             if not self.cap or not self.cap.isOpened():
                 return
             ok, frame = self.cap.read()
@@ -389,7 +491,7 @@ class OpenCVSource:
         if self.mode == "rtsp":
             self.cap.release()
             time.sleep(0.2)
-            self.cap = cv2.VideoCapture(str(self.source))
+            self.cap = cv2.VideoCapture(str(self._capture_source))
             if self.cap.isOpened():
                 return self.cap.read()
             return False, None
@@ -404,6 +506,15 @@ class OpenCVSource:
     def close(self):
         if self.cap is not None:
             self.cap.release()
+
+    @staticmethod
+    def _rtsp_tcp_url(url: str) -> str:
+        raw = str(url or "").strip()
+        if not raw.lower().startswith("rtsp://"):
+            return raw
+        glue = "&" if "?" in raw else "?"
+        # Запрашиваем TCP-транспорт и низкую задержку.
+        return f"{raw}{glue}rtsp_transport=tcp&fflags=nobuffer&flags=low_delay"
 
 
 class MjpegHTTPSource:
@@ -478,6 +589,172 @@ class MjpegHTTPSource:
             self._resp = None
         self._iter = None
         self._buf.clear()
+
+
+class FFmpegRTSPSource:
+    def __init__(self, url: str, target_fps: float = 30.0):
+        self.url = str(url)
+        self._target_fps = float(target_fps) if float(target_fps) > 0 else 30.0
+        self._proc: Optional[subprocess.Popen] = None
+        self._open = False
+        self._buf = bytearray()
+        self._prefetched_frame: Optional[np.ndarray] = None
+        self._last_error = ""
+        self._stdout_fd: Optional[int] = None
+        self._stderr_fd: Optional[int] = None
+        self._start()
+
+    @staticmethod
+    def _set_nonblocking(fd: int) -> None:
+        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+    def _start(self):
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            self._last_error = "ffmpeg не найден на НСУ"
+            return
+        transports = [None, "tcp", "udp"]
+        attempts = 0
+        while attempts < 5 and not self._open:
+            transport = transports[attempts % len(transports)]
+            attempts += 1
+            cmd = [ffmpeg, "-hide_banner", "-loglevel", "error"]
+            if transport:
+                cmd += ["-rtsp_transport", transport]
+            cmd += [
+                "-i",
+                self.url,
+                "-an",
+                "-f",
+                "mjpeg",
+                "-q:v",
+                "5",
+                "pipe:1",
+            ]
+            try:
+                self._proc = subprocess.Popen(  # noqa: S603
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    bufsize=0,
+                )
+                if self._proc.stdout is not None:
+                    self._stdout_fd = self._proc.stdout.fileno()
+                    self._set_nonblocking(self._stdout_fd)
+                if self._proc.stderr is not None:
+                    self._stderr_fd = self._proc.stderr.fileno()
+                    self._set_nonblocking(self._stderr_fd)
+            except Exception as exc:
+                self._proc = None
+                self._last_error = str(exc)
+                time.sleep(0.3)
+                continue
+
+            deadline = time.monotonic() + 4.0
+            while time.monotonic() < deadline:
+                frame = self._decode_next_frame(deadline=time.monotonic() + 1.0)
+                if frame is not None:
+                    self._prefetched_frame = frame
+                    self._open = True
+                    return
+                if self._proc is None or self._proc.poll() is not None:
+                    break
+            err_tail = self._read_stderr_tail()
+            self._last_error = (f"[transport={transport or 'auto'}] {err_tail}" if err_tail else self._last_error)
+            self.close()
+            if not self._open:
+                time.sleep(0.35)
+
+    def is_open(self) -> bool:
+        return bool(self._open and self._proc is not None and self._proc.poll() is None)
+
+    def fps(self) -> float:
+        return self._target_fps
+
+    def last_error(self) -> str:
+        return self._last_error
+
+    def _decode_next_frame(self, deadline: Optional[float] = None) -> Optional[np.ndarray]:
+        if self._proc is None or self._stdout_fd is None:
+            return None
+        while True:
+            start = self._buf.find(b"\xff\xd8")
+            end = self._buf.find(b"\xff\xd9", start + 2 if start >= 0 else 0)
+            if start >= 0 and end > start:
+                jpg = bytes(self._buf[start : end + 2])
+                del self._buf[: end + 2]
+                frame = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
+                if frame is not None:
+                    return frame
+            if deadline is not None and time.monotonic() > deadline:
+                return None
+            try:
+                chunk = os.read(self._stdout_fd, 64 * 1024)
+            except BlockingIOError:
+                chunk = b""
+            except Exception:
+                chunk = b""
+            if not chunk:
+                if self._proc.poll() is not None:
+                    return None
+                time.sleep(0.01)
+                continue
+            self._buf.extend(chunk)
+            if len(self._buf) > 16 * 1024 * 1024:
+                del self._buf[:-1024]
+
+    def read(self):
+        if self._prefetched_frame is not None:
+            frame = self._prefetched_frame
+            self._prefetched_frame = None
+            return True, frame
+        if not self.is_open():
+            return False, None
+        frame = self._decode_next_frame(deadline=time.monotonic() + 2.0)
+        if frame is None:
+            self._open = False
+            return False, None
+        return True, frame
+
+    def close(self):
+        self._open = False
+        if self._proc is not None:
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=2)
+            except Exception:
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+        self._proc = None
+        self._stdout_fd = None
+        self._stderr_fd = None
+        self._buf.clear()
+
+    def _read_stderr_tail(self) -> str:
+        if self._proc is None or self._stderr_fd is None:
+            return self._last_error or ""
+        try:
+            chunks: List[bytes] = []
+            while True:
+                try:
+                    part = os.read(self._stderr_fd, 32 * 1024)
+                except BlockingIOError:
+                    break
+                if not part:
+                    break
+                chunks.append(part)
+            raw = b"".join(chunks)
+            if not raw:
+                return self._last_error or ""
+            text = raw.decode("utf-8", errors="ignore").strip()
+            if not text:
+                return self._last_error or ""
+            return text[-500:]
+        except Exception:
+            return self._last_error or ""
 
 
 class FolderSource:
@@ -1876,8 +2153,19 @@ def _resolve_stream_detector(model_ui: str) -> str:
     if normalized == "nanodet":
         return "nanodet15_onnx"
     if normalized in {"yolov8n_baseline_multiscale", "yolo"}:
-        return "yolov8n_baseline_multiscale_onnx"
+        # Для stream-режима используем PT-вариант YOLOv8n: он стабильнее по input size
+        # и позволяет уменьшать imgsz без падений ONNX fixed-shape.
+        return "yolov8n_baseline_multiscale"
     return _resolve_detector(model_ui)
+
+
+def _stream_imgsz_for_detector(detector_name: str) -> Optional[int]:
+    name = str(detector_name or "").strip().lower()
+    if name in {"yolov8n_baseline_multiscale_onnx", "yolo_onnx"}:
+        return 960
+    if name in {"yolov8n_baseline_multiscale", "yolo"}:
+        return STREAM_DET_IMGSZ
+    return STREAM_DET_IMGSZ if STREAM_DET_IMGSZ > 0 else None
 
 
 def _autodetect_annotations_dir(frames_root: Path) -> str:
@@ -2546,23 +2834,6 @@ def _build_reader(meta: Dict) -> Tuple[object, Optional[Tuple[str, str]]]:
 
     if nsu_channel == "stream":
         rpi_base_url = get_rpi_source_url(str(meta.get("rpi_url", "")))
-        # Для stream-video предпочитаем скачать исходный файл с RPi и обрабатывать локально на НСУ.
-        # Это убирает декод/перекод на RPi и снижает лаги.
-        if source_kind == "video" and bool(meta.get("stream_use_raw_video", STREAM_USE_RAW_VIDEO)) and not STREAM_PREFER_RTSP:
-            raw_path = str(meta.get("source", "")).strip()
-            if raw_path:
-                try:
-                    local_video = UPLOAD_DIR / f"{meta.get('report_stem', 'stream')}_rpi_video.mp4"
-                    local_video = fetch_remote_file_to_local(rpi_base_url, raw_path, local_video)
-                    reader = OpenCVSource(str(local_video), "file", loop_input=loop_input)
-                    if reader.is_open():
-                        meta["source_local_cache"] = str(local_video)
-                        meta["stream_backend"] = "raw_file_cached"
-                        return reader, None
-                except Exception as exc:  # noqa: BLE001
-                    # Если на RPi старый сервис без /source/raw_file или другая ошибка — откатываемся к MJPEG.
-                    meta["stream_backend"] = "mjpeg_fallback"
-                    meta["stream_backend_error"] = str(exc)
         remote_session, stream_url, rpi_base, remote_meta = start_remote_source(
             rpi_base_url,
             source_kind,
@@ -2576,11 +2847,54 @@ def _build_reader(meta: Dict) -> Tuple[object, Optional[Tuple[str, str]]]:
             max_duration_sec=meta.get("stream_max_duration_sec"),
             jpeg_quality=int(meta.get("stream_jpeg_quality", 80) or 80),
         )
-        if stream_url.startswith("http://") or stream_url.startswith("https://"):
-            reader = MjpegHTTPSource(stream_url, target_fps=float(meta.get("stream_target_fps") or 30.0))
+        if not str(stream_url).lower().startswith("rtsp://"):
+            backend_name = str(remote_meta.get("backend", "")).strip() if isinstance(remote_meta, dict) else ""
+            raise RuntimeError(f"Ожидался RTSP поток, но получено другое (backend={backend_name or 'unknown'})")
+        # Практически стабильнее начинать с OpenCV RTSP-клиента, а ffmpeg использовать как запасной.
+        # Это устраняет зависания, когда ffmpeg-клиент долго не отдает первый кадр.
+        reader = None
+        open_err = ""
+        alt_reader = OpenCVSource(stream_url, mode="rtsp", loop_input=False)
+        if alt_reader.is_open():
+            reader = alt_reader
         else:
-            reader = OpenCVSource(stream_url, "rtsp", loop_input=loop_input)
-        if not reader.is_open():
+            try:
+                alt_reader.close()
+            except Exception:
+                pass
+
+        if reader is None:
+            # RTSP publisher на RPi может подниматься с небольшой задержкой после /source/start.
+            # Даём несколько коротких попыток, чтобы убрать race-condition на инициализации.
+            target_fps_local = float(meta.get("stream_target_fps") or 30.0)
+            for attempt in range(1, 5):
+                candidate = FFmpegRTSPSource(stream_url, target_fps=target_fps_local)
+                if candidate.is_open():
+                    reader = candidate
+                    break
+                try:
+                    open_err = str(candidate.last_error() or "").strip()
+                except Exception:
+                    open_err = ""
+                try:
+                    candidate.close()
+                except Exception:
+                    pass
+                # Параллельно смотрим статус publisher на RPi для более понятной диагностики.
+                if isinstance(remote_meta, dict):
+                    latest = fetch_remote_source_stats(rpi_base, remote_session)
+                    if isinstance(latest, dict):
+                        remote_meta.update(latest)
+                time.sleep(0.35)
+        if reader is None:
+            pub_err = ""
+            try:
+                pub_err = str((remote_meta or {}).get("publisher_error", "") or "").strip()
+            except Exception:
+                pub_err = ""
+            details = open_err or pub_err
+            if details:
+                raise RuntimeError(f"Не удалось открыть поток с RaspberryPi: {details}")
             raise RuntimeError("Не удалось открыть поток с RaspberryPi")
         if isinstance(remote_meta, dict):
             meta["stream_mission_id"] = str(remote_meta.get("mission_id", meta.get("stream_mission_id", "")))
@@ -2589,7 +2903,7 @@ def _build_reader(meta: Dict) -> Tuple[object, Optional[Tuple[str, str]]]:
             if backend_name:
                 meta["stream_backend"] = backend_name
         if not meta.get("stream_backend"):
-            meta["stream_backend"] = "mjpeg_fallback"
+            meta["stream_backend"] = "rtsp"
         return reader, (rpi_base, remote_session)
 
     if source_kind == "frames":
@@ -2719,7 +3033,7 @@ def stream_start_mission(req: StartStreamMissionRequest):
     detector_conf = None
     detector_iou = None
     detector_max_det = None
-    detector_imgsz = STREAM_DET_IMGSZ if mode == "video" else None
+    detector_imgsz = _stream_imgsz_for_detector(detector_name) if mode == "video" else None
     display_conf = None
     target_fps = None
     debug_preset_name = ""
@@ -2737,6 +3051,13 @@ def stream_start_mission(req: StartStreamMissionRequest):
         target_fps = debug_preset_meta.get("target_fps")
     elif mode == "video":
         detector_max_det = STREAM_DET_MAX_DET
+
+    stream_target_fps = float(STREAM_VIDEO_TARGET_FPS)
+    if mode == "frames" and target_fps is not None:
+        try:
+            stream_target_fps = float(target_fps)
+        except Exception:
+            stream_target_fps = float(STREAM_VIDEO_TARGET_FPS)
 
     sessions[session_id] = {
         "run_mode": "nsu",
@@ -2768,7 +3089,7 @@ def stream_start_mission(req: StartStreamMissionRequest):
         "coco_gt_override": annotations_coco_value if mode == "frames" else "",
         "stream_mission_id": mission_id,
         "stream_realtime": True,
-        "stream_target_fps": float(STREAM_VIDEO_TARGET_FPS),
+        "stream_target_fps": stream_target_fps,
         "stream_jitter_ms": 0,
         "stream_drop_if_lag": True,
         "stream_max_duration_sec": 0.0,
@@ -2937,7 +3258,7 @@ async def start_rtsp(
     detector_conf = None
     detector_iou = None
     detector_max_det = None
-    detector_imgsz = STREAM_DET_IMGSZ if (run_mode == "nsu" and nsu_channel == "stream") else None
+    detector_imgsz = _stream_imgsz_for_detector(detector_name) if (run_mode == "nsu" and nsu_channel == "stream") else None
     display_conf = None
     target_fps = None
     debug_preset_name = ""
@@ -3091,24 +3412,14 @@ async def start_source(
 
     detect_enabled = str(detect).lower() in ("1", "true", "yes", "on")
     save_video_flag = str(save_video).lower() in ("1", "true", "yes", "on")
-    stream_realtime_flag = str(stream_realtime).lower() in ("1", "true", "yes", "on")
-    stream_drop_if_lag_flag = str(stream_drop_if_lag).lower() in ("1", "true", "yes", "on")
-    try:
-        stream_target_fps_val = max(0.0, float(stream_target_fps))
-    except Exception:
-        stream_target_fps_val = 0.0
-    try:
-        stream_jitter_ms_val = max(0, int(float(stream_jitter_ms)))
-    except Exception:
-        stream_jitter_ms_val = 0
-    try:
-        stream_max_duration_sec_val = max(0.0, float(stream_max_duration_sec))
-    except Exception:
-        stream_max_duration_sec_val = 0.0
-    try:
-        stream_jpeg_quality_val = max(10, min(100, int(float(stream_jpeg_quality))))
-    except Exception:
-        stream_jpeg_quality_val = 80
+    _ = (
+        stream_realtime,
+        stream_target_fps,
+        stream_jitter_ms,
+        stream_drop_if_lag,
+        stream_max_duration_sec,
+        stream_jpeg_quality,
+    )
 
     annotations_value = annotations_dir.strip()
     annotations_coco_value = annotations_coco.strip()
@@ -3164,7 +3475,7 @@ async def start_source(
     detector_conf = None
     detector_iou = None
     detector_max_det = None
-    detector_imgsz = STREAM_DET_IMGSZ if (run_mode == "nsu" and nsu_channel == "stream" and source_kind in {"video", "rtsp"}) else None
+    detector_imgsz = _stream_imgsz_for_detector(detector_name) if (run_mode == "nsu" and nsu_channel == "stream" and source_kind in {"video", "rtsp"}) else None
     display_conf = None
     target_fps = None
     debug_preset_name = debug_preset.strip()
@@ -3221,12 +3532,12 @@ async def start_source(
         "annotations_dir": annotations_value,
         "coco_gt_override": annotations_coco_value if source_kind == "frames" else "",
         "stream_mission_id": stream_mission_id.strip(),
-        "stream_realtime": stream_realtime_flag,
-        "stream_target_fps": stream_target_fps_val,
-        "stream_jitter_ms": stream_jitter_ms_val,
-        "stream_drop_if_lag": stream_drop_if_lag_flag,
-        "stream_max_duration_sec": stream_max_duration_sec_val,
-        "stream_jpeg_quality": stream_jpeg_quality_val,
+        "stream_realtime": True,
+        "stream_target_fps": 0.0,
+        "stream_jitter_ms": 0,
+        "stream_drop_if_lag": True,
+        "stream_max_duration_sec": 0.0,
+        "stream_jpeg_quality": 80,
         "stream_use_raw_video": bool(STREAM_USE_RAW_VIDEO) if (run_mode == "nsu" and nsu_channel == "stream" and source_kind == "video") else False,
     }
     return {
@@ -3349,7 +3660,23 @@ async def ws_process(websocket: WebSocket, session_id: str):
                     )
                 )
                 return
-        reader, remote_link = _build_reader(meta)
+        if run_mode == "nsu" and nsu_channel == "stream":
+            try:
+                await websocket.send_text(json.dumps({"info": "Запускаю удаленный источник..."}))
+            except Exception:
+                pass
+        init_timeout = float(STREAM_REMOTE_INIT_TIMEOUT_SEC)
+        if init_timeout <= 0:
+            init_timeout = 90.0
+        try:
+            reader, remote_link = await asyncio.wait_for(
+                loop.run_in_executor(None, _build_reader, meta),
+                timeout=init_timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                f"Таймаут инициализации удаленного источника ({int(init_timeout)}с)"
+            ) from exc
         sessions[session_id]["remote_link"] = remote_link
         remote_stats_getter = None
         if remote_link:
@@ -3451,7 +3778,10 @@ async def ws_process(websocket: WebSocket, session_id: str):
         if session_id in sessions:
             sessions[session_id]["stop"] = True
     except Exception as exc:  # noqa: BLE001
-        await websocket.send_text(json.dumps({"error": f"Ошибка: {exc}"}))
+        try:
+            await websocket.send_text(json.dumps({"error": f"Ошибка: {exc}"}))
+        except Exception:
+            pass
     finally:
         if session_id in sessions:
             sessions[session_id]["stop"] = True
@@ -3469,7 +3799,10 @@ async def ws_process(websocket: WebSocket, session_id: str):
                     Path(sessions[session_id].get("source", "")).unlink(missing_ok=True)
                 except Exception:
                     pass
-        await websocket.close()
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 
