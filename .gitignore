@@ -31,6 +31,7 @@ htmlcov/
 
 # Local runtime outputs
 runtime/
+local-runtime/
 logs/
 *.log
 *.pid
@@ -50,6 +51,7 @@ nanodet/nanodet/model/weights/
 # Local datasets / uploads (keep folder structure in git)
 public/images/*
 public/annotations/*
+test_videos/
 !public/images/.gitkeep
 !public/annotations/.gitkeep
 
@@ -65,3 +67,5 @@ public/annotations/*
 build/
 dist/
 *.egg-info/
+*.zip
+*.tar.gz
