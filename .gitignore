@@ -42,6 +42,7 @@ temp/
 
 # Local model artifacts
 models/
+third_party/
 nanodet/nanodet/model/weights/
 *.onnx
 *.pth

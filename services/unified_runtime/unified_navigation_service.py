@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import csv
 import datetime
-import fcntl
 import io
 import json
 import os
@@ -27,9 +27,19 @@ from fastapi.responses import FileResponse, HTMLResponse  # type: ignore
 from pydantic import BaseModel  # type: ignore
 
 from services.unified_runtime.feature_flags import MODE_FLAGS, is_enabled
+from services.unified_runtime.navigation_matchers import (
+    build_marker_matcher,
+    marker_matcher_config_from_env,
+    normalize_nav_matcher_name,
+)
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+try:
+    import fcntl  # type: ignore
+except Exception:  # pragma: no cover
+    fcntl = None
 
 try:
     import yaml
@@ -292,9 +302,11 @@ def _apply_mode_flags(overrides: Dict[str, bool]):
 def _load_config() -> Dict:
     env_detection_url = os.getenv("UNIFIED_DETECTION_URL", "").strip()
     env_rpi_source_url = os.getenv("UNIFIED_RPI_SOURCE_URL", "").strip()
+    env_nav_matcher = os.getenv("NAV_MATCHER", "").strip()
     defaults = {
         "detection_url": env_detection_url or DETECTION_URL,
         "rpi_source_url": env_rpi_source_url or RPI_SOURCE_URL,
+        "nav_matcher": env_nav_matcher or "legacy",
         "ui_template_path": str(UI_TEMPLATE_PATH),
         "mode_flags": {},
         "debug_presets": {},
@@ -309,13 +321,17 @@ def _load_config() -> Dict:
         mode_flags = {}
     detection_url = str(loaded.get("detection_url", defaults["detection_url"]))
     rpi_source_url = str(loaded.get("rpi_source_url", defaults["rpi_source_url"]))
+    nav_matcher = str(loaded.get("nav_matcher", defaults["nav_matcher"]))
     if env_detection_url:
         detection_url = env_detection_url
     if env_rpi_source_url:
         rpi_source_url = env_rpi_source_url
+    if env_nav_matcher:
+        nav_matcher = env_nav_matcher
     return {
         "detection_url": detection_url,
         "rpi_source_url": rpi_source_url,
+        "nav_matcher": nav_matcher,
         "ui_template_path": str(loaded.get("ui_template_path", defaults["ui_template_path"])),
         "mode_flags": mode_flags,
         "debug_presets": loaded.get("debug_presets", {}),
@@ -606,8 +622,15 @@ class FFmpegRTSPSource:
 
     @staticmethod
     def _set_nonblocking(fd: int) -> None:
-        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-        fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        # Cross-platform non-blocking mode for ffmpeg pipes.
+        try:
+            os.set_blocking(fd, False)
+            return
+        except Exception:
+            pass
+        if fcntl is not None:
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
     def _start(self):
         ffmpeg = shutil.which("ffmpeg")
@@ -1874,6 +1897,150 @@ def _resize_for_detection(frame: np.ndarray, max_width: Optional[int]) -> np.nda
     return cv2.resize(frame, (int(max_width), new_h))
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _points_in_mask_ratio(points: np.ndarray, mask: Optional[np.ndarray]) -> Optional[float]:
+    if mask is None or points is None or len(points) == 0:
+        return None
+    h, w = mask.shape[:2]
+    pts = points.reshape(-1, 2)
+    xs = np.clip(np.round(pts[:, 0]).astype(np.int32), 0, max(0, w - 1))
+    ys = np.clip(np.round(pts[:, 1]).astype(np.int32), 0, max(0, h - 1))
+    return float(np.mean(mask[ys, xs] > 0))
+
+
+def _plane_allowed_ratio(H_img_to_plane: Optional[np.ndarray], points: np.ndarray, limit: float = 3.0) -> Optional[float]:
+    if H_img_to_plane is None or points is None or len(points) == 0:
+        return None
+    try:
+        plane = cv2.perspectiveTransform(points.reshape(-1, 1, 2).astype(np.float32), H_img_to_plane.astype(np.float32)).reshape(-1, 2)
+    except cv2.error:
+        return None
+    finite = np.isfinite(plane).all(axis=1)
+    allowed = finite & (np.abs(plane[:, 0]) <= limit) & (np.abs(plane[:, 1]) <= limit)
+    return float(np.mean(allowed)) if len(allowed) else None
+
+
+def _match_geometry_metrics(
+    backend: str,
+    p0: np.ndarray,
+    p1: np.ndarray,
+    prev_roi: Optional[np.ndarray],
+    cur_roi: Optional[np.ndarray],
+    H_prev_to_plane: Optional[np.ndarray],
+    ransac_thr: float,
+) -> Tuple[Dict[str, Any], Optional[np.ndarray], Optional[np.ndarray]]:
+    p0 = np.asarray(p0, dtype=np.float32).reshape(-1, 2)
+    p1 = np.asarray(p1, dtype=np.float32).reshape(-1, 2)
+    metrics: Dict[str, Any] = {
+        "backend": backend,
+        "matches_total": int(len(p0)),
+        "inliers": 0,
+        "inlier_ratio": 0.0,
+        "reproj_error_median_px": None,
+        "reproj_error_mean_px": None,
+        "roi_prev_ratio": _points_in_mask_ratio(p0, prev_roi),
+        "roi_cur_ratio": _points_in_mask_ratio(p1, cur_roi),
+        "allowed_plane_ratio": None,
+        "ransac_thr_px": float(ransac_thr),
+    }
+    if len(p0) < 4:
+        return metrics, None, None
+
+    H, inl = cv2.findHomography(p0.reshape(-1, 1, 2), p1.reshape(-1, 1, 2), cv2.RANSAC, float(ransac_thr))
+    if H is None or inl is None:
+        return metrics, None, None
+
+    inlier_mask = inl.reshape(-1).astype(bool)
+    pred = cv2.perspectiveTransform(p0.reshape(-1, 1, 2), H.astype(np.float32)).reshape(-1, 2)
+    err = np.linalg.norm(pred - p1, axis=1)
+    err = err[np.isfinite(err)]
+    inlier_err = err[inlier_mask[: len(err)]] if len(err) == len(inlier_mask) else err
+    if len(inlier_err):
+        metrics["reproj_error_median_px"] = float(np.median(inlier_err))
+        metrics["reproj_error_mean_px"] = float(np.mean(inlier_err))
+
+    inliers_cnt = int(inlier_mask.sum())
+    metrics["inliers"] = inliers_cnt
+    metrics["inlier_ratio"] = float(inliers_cnt) / float(max(1, len(p0)))
+
+    invH = safe_inv_homography(H)
+    if invH is not None and H_prev_to_plane is not None:
+        H_cur_to_plane = (H_prev_to_plane @ invH).astype(np.float64)
+        metrics["allowed_plane_ratio"] = _plane_allowed_ratio(H_cur_to_plane, p1)
+    return metrics, H, inlier_mask
+
+
+def _draw_match_overlay(
+    prev_frame: np.ndarray,
+    cur_frame: np.ndarray,
+    p0: np.ndarray,
+    p1: np.ndarray,
+    inlier_mask: Optional[np.ndarray] = None,
+    max_draw: int = 140,
+) -> np.ndarray:
+    left = prev_frame.copy()
+    right = cur_frame.copy()
+    h = max(left.shape[0], right.shape[0])
+    w0 = left.shape[1]
+    canvas = np.zeros((h, w0 + right.shape[1], 3), dtype=np.uint8)
+    canvas[: left.shape[0], :w0] = left
+    canvas[: right.shape[0], w0:] = right
+
+    p0 = np.asarray(p0, dtype=np.float32).reshape(-1, 2)
+    p1 = np.asarray(p1, dtype=np.float32).reshape(-1, 2)
+    if inlier_mask is None:
+        inlier_mask = np.ones((len(p0),), dtype=bool)
+    count = min(len(p0), int(max_draw))
+    for idx in range(count):
+        a = tuple(np.round(p0[idx]).astype(int))
+        b = tuple((np.round(p1[idx]) + np.array([w0, 0])).astype(int))
+        color = (0, 220, 0) if bool(inlier_mask[idx]) else (0, 0, 220)
+        cv2.circle(canvas, a, 3, color, -1, cv2.LINE_AA)
+        cv2.circle(canvas, b, 3, color, -1, cv2.LINE_AA)
+        cv2.line(canvas, a, b, color, 1, cv2.LINE_AA)
+    return canvas
+
+
+def _write_matcher_metrics_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
+    if not rows:
+        return
+    keys = sorted({k for row in rows for k in row.keys()})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=keys)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _comparison_summary(rows: List[Dict[str, Any]], event_counts: Dict[str, int]) -> Dict[str, Any]:
+    def avg(backend: str, key: str) -> Optional[float]:
+        vals = [float(r[key]) for r in rows if r.get("backend") == backend and r.get(key) not in (None, "")]
+        return float(np.mean(vals)) if vals else None
+
+    backends = sorted({str(r.get("backend", "")) for r in rows if r.get("backend")})
+    return {
+        "backends": {
+            b: {
+                "frames": sum(1 for r in rows if r.get("backend") == b),
+                "avg_matches_total": avg(b, "matches_total"),
+                "avg_inliers": avg(b, "inliers"),
+                "avg_inlier_ratio": avg(b, "inlier_ratio"),
+                "avg_reproj_error_median_px": avg(b, "reproj_error_median_px"),
+                "avg_pose_delta_m": avg(b, "pose_delta_m"),
+                "avg_z_delta_m": avg(b, "z_delta_m"),
+            }
+            for b in backends
+        },
+        "events": dict(event_counts),
+    }
+
+
 def encode_image_b64(img: np.ndarray, jpeg_quality: int = 80, max_width: Optional[int] = None) -> str:
     frame = img
     if max_width is not None and max_width > 0 and frame.shape[1] > max_width:
@@ -1952,6 +2119,7 @@ def save_report(
     mode_label: str,
     video_path: Optional[Path] = None,
     alert_frames_dir: Optional[Path] = None,
+    diagnostics_dir: Optional[Path] = None,
 ):
     out_dir = REPORT_DIR / report_stem
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -2006,6 +2174,12 @@ def save_report(
                     continue
                 rel = p.relative_to(alert_frames_dir)
                 zf.write(p, f"alerts/{rel}")
+        if diagnostics_dir and diagnostics_dir.exists():
+            for p in sorted(diagnostics_dir.rglob("*")):
+                if not p.is_file():
+                    continue
+                rel = p.relative_to(diagnostics_dir)
+                zf.write(p, f"matcher_diagnostics/{rel}")
     return zip_path
 
 
@@ -2245,6 +2419,7 @@ def run_unified_pipeline(
     debug_evaluator: Optional[YoloDebugEvaluator] = None,
     debug_metrics_info: str = "",
     remote_stats_getter: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
+    nav_matcher: str = "legacy",
 ):
     fps_samples: List[float] = []
     person_samples: List[int] = []
@@ -2380,18 +2555,51 @@ def run_unified_pipeline(
 
     prev_gray_marker = preprocess_gray(first_marker)
     prev_roi_marker = make_roi_mask(prev_gray_marker, ROI_TOP_RATIO)
-
-    def detect_features(gray, mask):
-        return cv2.goodFeaturesToTrack(
-            gray,
-            maxCorners=MAX_CORNERS_MARKER,
-            qualityLevel=GFTT_QUALITY,
-            minDistance=GFTT_MIN_DIST,
-            blockSize=GFTT_BLOCK,
-            mask=mask,
+    prev_frame_marker = first_marker
+    marker_matcher = None
+    nav_matcher_name = normalize_nav_matcher_name(nav_matcher)
+    matcher_debug_rows: List[Dict[str, Any]] = []
+    matcher_event_counts: Dict[str, int] = {
+        "marker_reacquisition_events": 0,
+        "matcher_redetect_events": 0,
+        "xfeat_recovery_events": 0,
+        "active_rejected_steps": 0,
+    }
+    matcher_diag_dir: Optional[Path] = None
+    matcher_diag_legacy = None
+    matcher_diag_xfeat = None
+    matcher_diag_pairs_saved = 0
+    matcher_debug_enabled = nav_mode == "marker" and _env_bool("NAV_MATCHER_DEBUG", False)
+    matcher_debug_every = max(1, int(os.getenv("NAV_MATCHER_DEBUG_EVERY_N", "30")))
+    matcher_debug_max_pairs = max(0, int(os.getenv("NAV_MATCHER_DEBUG_MAX_PAIRS", "4")))
+    if nav_mode == "marker":
+        marker_matcher_config = marker_matcher_config_from_env(
+            max_corners=MAX_CORNERS_MARKER,
+            min_track_points=MIN_TRACK_PTS_MARKER,
+            quality_level=GFTT_QUALITY,
+            min_distance=GFTT_MIN_DIST,
+            block_size=GFTT_BLOCK,
+            lk_win=LK_WIN_MARKER,
+            lk_levels=LK_LEVELS_MARKER,
+            fb_threshold=FB_THR_MARKER,
+            lk_error_threshold=LK_ERR_THR_MARKER,
+            redetect_min_points=REDETECT_MIN_PTS_MARKER,
         )
+        marker_matcher = build_marker_matcher(nav_matcher_name, marker_matcher_config)
+        on_update({"info": f"Navigation matcher: {nav_matcher_name}"})
+        if matcher_debug_enabled:
+            matcher_diag_root = os.getenv("NAV_MATCHER_DEBUG_DIR", "").strip()
+            matcher_diag_dir = Path(matcher_diag_root) if matcher_diag_root else REPORT_DIR / f"{report_stem}_matcher_diagnostics"
+            matcher_diag_dir.mkdir(parents=True, exist_ok=True)
+            matcher_diag_legacy = build_marker_matcher("legacy", marker_matcher_config)
+            matcher_diag_xfeat = marker_matcher if hasattr(marker_matcher, "match_xfeat") else build_marker_matcher(
+                "xfeat_lighterglue",
+                marker_matcher_config,
+                initialize=False,
+            )
+            on_update({"info": f"Matcher diagnostics enabled: {matcher_diag_dir}"})
 
-    prev_pts_marker = detect_features(prev_gray_marker, prev_roi_marker)
+    prev_pts_marker = marker_matcher.detect_features(prev_gray_marker, prev_roi_marker) if marker_matcher is not None else None
     H_prev_to_plane = H_init
     if H_prev_to_plane is None:
         pts0, _ = detect_red_marker_corners(first_marker)
@@ -2425,12 +2633,6 @@ def run_unified_pipeline(
         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
     )
 
-    lk_win = LK_WIN_MARKER if (LK_WIN_MARKER % 2 == 1) else (LK_WIN_MARKER + 1)
-    lk_params = dict(
-        winSize=(lk_win, lk_win),
-        maxLevel=LK_LEVELS_MARKER,
-        criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
-    )
     processed = 0
     last_emit_ts = -1.0e9
     if nav_mode == "marker":
@@ -2467,6 +2669,7 @@ def run_unified_pipeline(
             t_abs = source_frame_idx / max(fps, 1e-6)
             cur_gray = preprocess_gray(frame_marker)
             cur_roi = make_roi_mask(cur_gray, ROI_TOP_RATIO)
+            z_before = float(alt_agl_state)
 
             alt_gray = cv2.cvtColor(frame_marker, cv2.COLOR_BGR2GRAY)
             alt_marker = detect_red_square_corners_alt(frame_marker)
@@ -2510,115 +2713,189 @@ def run_unified_pipeline(
                         if dist < 30.0:
                             H_prev_to_plane = H_direct
                             reset = 1
+                            matcher_event_counts["marker_reacquisition_events"] += 1
                             last_xy = xy_direct
                             last_accept_t_abs = t_abs
 
+            if (
+                matcher_debug_enabled
+                and matcher_diag_dir is not None
+                and matcher_diag_pairs_saved < matcher_debug_max_pairs
+                and (processed == 1 or processed % matcher_debug_every == 0)
+            ):
+                diag_items = []
+                if matcher_diag_legacy is not None:
+                    diag_prev_pts = matcher_diag_legacy.detect_features(prev_gray_marker, prev_roi_marker)
+                    legacy_diag = matcher_diag_legacy.match(
+                        prev_frame_marker,
+                        frame_marker,
+                        prev_gray_marker,
+                        cur_gray,
+                        prev_roi_marker,
+                        cur_roi,
+                        diag_prev_pts,
+                        H_guess_prev_to_cur,
+                    )
+                    diag_items.append(("legacy", legacy_diag))
+                if matcher_diag_xfeat is not None and hasattr(matcher_diag_xfeat, "match_xfeat"):
+                    xfeat_diag = matcher_diag_xfeat.match_xfeat(
+                        prev_frame_marker,
+                        frame_marker,
+                        prev_roi_marker,
+                        cur_roi,
+                        H_guess_prev_to_cur,
+                    )
+                    diag_items.append(("xfeat", xfeat_diag))
+
+                for diag_name, diag_result in diag_items:
+                    diag_thr = float(diag_result.ransac_threshold or RANSAC_THR_MARKER)
+                    diag_metrics, _diag_H, diag_inliers = _match_geometry_metrics(
+                        diag_name,
+                        diag_result.prev_points,
+                        diag_result.cur_points,
+                        prev_roi_marker,
+                        cur_roi,
+                        H_prev_to_plane,
+                        diag_thr,
+                    )
+                    diag_metrics.update(
+                        {
+                            "frame_index": int(frame_idx),
+                            "source_frame_index": int(source_frame_idx),
+                            "kind": "side_by_side",
+                            "raw_matches_total": int(diag_result.raw_matches_total or len(diag_result.prev_points)),
+                            "pose_delta_m": None,
+                            "z_delta_m": None,
+                        }
+                    )
+                    matcher_debug_rows.append(diag_metrics)
+
+                    suffix = "" if matcher_diag_pairs_saved == 0 else f"_{processed:06d}"
+                    base_name = "xfeat" if diag_name == "xfeat" else "legacy"
+                    cv2.imwrite(
+                        str(matcher_diag_dir / f"{base_name}_matches_overlay{suffix}.png"),
+                        _draw_match_overlay(prev_frame_marker, frame_marker, diag_result.prev_points, diag_result.cur_points, None),
+                    )
+                    cv2.imwrite(
+                        str(matcher_diag_dir / f"{base_name}_inliers_overlay{suffix}.png"),
+                        _draw_match_overlay(prev_frame_marker, frame_marker, diag_result.prev_points, diag_result.cur_points, diag_inliers),
+                    )
+                matcher_diag_pairs_saved += 1
+
             accepted = False
-            if prev_pts_marker is None or len(prev_pts_marker) < MIN_TRACK_PTS_MARKER:
-                prev_pts_marker = detect_features(prev_gray_marker, prev_roi_marker)
+            active_metrics: Optional[Dict[str, Any]] = None
+            active_backend = nav_matcher_name
+            active_raw_matches_total = 0
+            pose_delta_m: Optional[float] = None
+            if marker_matcher is None:
+                raise RuntimeError("Marker matcher is not initialized.")
+            if marker_matcher.requires_seed_points and (prev_pts_marker is None or len(prev_pts_marker) < MIN_TRACK_PTS_MARKER):
+                prev_pts_marker = marker_matcher.detect_features(prev_gray_marker, prev_roi_marker)
 
-            if prev_pts_marker is not None and len(prev_pts_marker) >= MIN_TRACK_PTS_MARKER:
-                lk_flags = 0
-                next_init = None
-                if H_guess_prev_to_cur is not None:
-                    try:
-                        next_init = cv2.perspectiveTransform(prev_pts_marker, H_guess_prev_to_cur)
-                        lk_flags |= cv2.OPTFLOW_USE_INITIAL_FLOW
-                    except cv2.error:
-                        next_init = None
-                        lk_flags = 0
-
-                cur_pts, st_fwd, err_fwd = cv2.calcOpticalFlowPyrLK(
-                    prev_gray_marker, cur_gray, prev_pts_marker, next_init, flags=lk_flags, **lk_params
+            can_match = not marker_matcher.requires_seed_points
+            can_match = can_match or (prev_pts_marker is not None and len(prev_pts_marker) >= MIN_TRACK_PTS_MARKER)
+            if can_match:
+                match_result = marker_matcher.match(
+                    prev_frame_marker,
+                    frame_marker,
+                    prev_gray_marker,
+                    cur_gray,
+                    prev_roi_marker,
+                    cur_roi,
+                    prev_pts_marker,
+                    H_guess_prev_to_cur,
                 )
-                if cur_pts is not None and st_fwd is not None:
-                    st_fwd = st_fwd.reshape(-1).astype(bool)
-                    p0 = np.empty((0, 2), dtype=np.float32)
-                    p1 = np.empty((0, 2), dtype=np.float32)
+                p0 = match_result.prev_points
+                p1 = match_result.cur_points
+                active_backend = match_result.backend or nav_matcher_name
+                active_raw_matches_total = int(match_result.raw_matches_total or len(p0))
+                if active_backend == "xfeat_recovery":
+                    matcher_event_counts["xfeat_recovery_events"] += 1
+                if match_result.force_redetect:
+                    force_redetect_next = True
 
-                    if np.count_nonzero(st_fwd) >= MIN_TRACK_PTS_MARKER:
-                        p0_f = prev_pts_marker[st_fwd]
-                        p1_f = cur_pts[st_fwd]
-                        good = np.ones((len(p0_f),), dtype=bool)
-
-                        if err_fwd is not None and LK_ERR_THR_MARKER > 0:
-                            ef = err_fwd.reshape(-1)[st_fwd]
-                            good &= np.isfinite(ef) & (ef < LK_ERR_THR_MARKER)
-
-                        if FB_THR_MARKER > 0:
-                            back_pts, st_back, err_back = cv2.calcOpticalFlowPyrLK(
-                                cur_gray, prev_gray_marker, p1_f, None, **lk_params
+                if len(p0) >= MIN_TRACK_PTS_MARKER:
+                    active_ransac_thr = float(match_result.ransac_threshold or RANSAC_THR_MARKER)
+                    H_prev_to_cur, inl = cv2.findHomography(
+                        p0.reshape(-1, 1, 2),
+                        p1.reshape(-1, 1, 2),
+                        cv2.RANSAC,
+                        active_ransac_thr,
+                    )
+                    if H_prev_to_cur is not None and inl is not None:
+                        if matcher_debug_enabled:
+                            active_metrics, _active_H, _active_inliers = _match_geometry_metrics(
+                                active_backend,
+                                p0,
+                                p1,
+                                prev_roi_marker,
+                                cur_roi,
+                                H_prev_to_plane,
+                                active_ransac_thr,
                             )
-                            if back_pts is not None and st_back is not None:
-                                st_back = st_back.reshape(-1).astype(bool)
-                                good &= st_back
+                        inliers_cnt = int(inl.sum())
+                        ratio = float(inliers_cnt) / float(max(1, len(p0)))
+                        if H_prev_to_cur is not None and inliers_cnt >= MIN_INLIERS_MARKER and ratio >= MIN_INLIER_RATIO_MARKER:
+                            H_guess_prev_to_cur = H_prev_to_cur
+                        min_inl_dyn = max(MIN_INLIERS_MARKER, int(0.30 * len(p0)))
 
-                                fb = np.linalg.norm(p0_f.reshape(-1, 2) - back_pts.reshape(-1, 2), axis=1)
-                                good &= np.isfinite(fb) & (fb < FB_THR_MARKER)
-
-                                if err_back is not None and LK_ERR_THR_MARKER > 0:
-                                    eb = err_back.reshape(-1)
-                                    good &= np.isfinite(eb) & (eb < LK_ERR_THR_MARKER)
-
-                        p0 = p0_f.reshape(-1, 2)[good]
-                        p1 = p1_f.reshape(-1, 2)[good]
-
-                        if REDETECT_MIN_PTS_MARKER > 0 and len(p0) < REDETECT_MIN_PTS_MARKER:
+                        if ratio < HARD_RESET_RATIO_MARKER:
                             force_redetect_next = True
 
-                    if len(p0) >= MIN_TRACK_PTS_MARKER:
-                        H_prev_to_cur, inl = cv2.findHomography(
-                            p0.reshape(-1, 1, 2),
-                            p1.reshape(-1, 1, 2),
-                            cv2.RANSAC,
-                            RANSAC_THR_MARKER,
-                        )
-                        if H_prev_to_cur is not None and inl is not None:
-                            inliers_cnt = int(inl.sum())
-                            ratio = float(inliers_cnt) / float(max(1, len(p0)))
-                            if H_prev_to_cur is not None and inliers_cnt >= MIN_INLIERS_MARKER and ratio >= MIN_INLIER_RATIO_MARKER:
-                                H_guess_prev_to_cur = H_prev_to_cur
-                            min_inl_dyn = max(MIN_INLIERS_MARKER, int(0.30 * len(p0)))
+                        if inliers_cnt >= min_inl_dyn and ratio >= MIN_INLIER_RATIO_MARKER and H_prev_to_plane is not None:
+                            invH = safe_inv_homography(H_prev_to_cur)
+                            if invH is not None:
+                                H_cur_to_plane = (H_prev_to_plane @ invH).astype(np.float64)
+                                inl_mask = inl.reshape(-1).astype(bool)
+                                p1_in = p1[inl_mask]
+                                xy_candidate = project_points_median(H_cur_to_plane, p1_in)
+                                if xy_candidate is None:
+                                    xy_candidate = project_point(H_cur_to_plane, track_x, track_y)
 
-                            if ratio < HARD_RESET_RATIO_MARKER:
-                                force_redetect_next = True
-
-                            if inliers_cnt >= min_inl_dyn and ratio >= MIN_INLIER_RATIO_MARKER and H_prev_to_plane is not None:
-                                invH = safe_inv_homography(H_prev_to_cur)
-                                if invH is not None:
-                                    H_cur_to_plane = (H_prev_to_plane @ invH).astype(np.float64)
-                                    inl_mask = inl.reshape(-1).astype(bool)
-                                    p1_in = p1[inl_mask]
-                                    xy_candidate = project_points_median(H_cur_to_plane, p1_in)
-                                    if xy_candidate is None:
-                                        xy_candidate = project_point(H_cur_to_plane, track_x, track_y)
-
-                                    if xy_candidate is not None:
-                                        dt = float(t_abs - last_accept_t_abs)
-                                        if dt <= 0:
-                                            dt = 1.0 / max(float(fps), 1e-6)
-                                        step = float(np.hypot(xy_candidate[0] - last_xy[0], xy_candidate[1] - last_xy[1]))
-                                        max_step = MAX_SPEED_MARKER * dt * float(MAX_STEP_SCALE_MARKER)
-                                        if reset == 1 or step <= max_step:
-                                            accepted = True
-                                            last_accept_t_abs = float(t_abs)
-                                            H_prev_to_plane = H_cur_to_plane
-                                            last_xy = (float(xy_candidate[0]), float(xy_candidate[1]))
-                                            prev_pts_marker = p1_in.reshape(-1, 1, 2).astype(np.float32)
+                                if xy_candidate is not None:
+                                    dt = float(t_abs - last_accept_t_abs)
+                                    if dt <= 0:
+                                        dt = 1.0 / max(float(fps), 1e-6)
+                                    step = float(np.hypot(xy_candidate[0] - last_xy[0], xy_candidate[1] - last_xy[1]))
+                                    pose_delta_m = float(step * MARKER_SIZE_XY_M)
+                                    max_step = MAX_SPEED_MARKER * dt * float(MAX_STEP_SCALE_MARKER)
+                                    if reset == 1 or step <= max_step:
+                                        accepted = True
+                                        last_accept_t_abs = float(t_abs)
+                                        H_prev_to_plane = H_cur_to_plane
+                                        last_xy = (float(xy_candidate[0]), float(xy_candidate[1]))
+                                        prev_pts_marker = p1_in.reshape(-1, 1, 2).astype(np.float32)
 
             if not accepted:
-                prev_pts_marker = detect_features(cur_gray, cur_roi)
+                matcher_event_counts["active_rejected_steps"] += 1
+                prev_pts_marker = marker_matcher.detect_features(cur_gray, cur_roi)
 
             prev_gray_marker = cur_gray
             prev_roi_marker = cur_roi
+            prev_frame_marker = frame_marker
             if force_redetect_next:
-                prev_pts_marker = detect_features(prev_gray_marker, prev_roi_marker)
+                matcher_event_counts["matcher_redetect_events"] += 1
+                prev_pts_marker = marker_matcher.detect_features(prev_gray_marker, prev_roi_marker)
 
             x_nav = float(-last_xy[0] if FLIP_X_MARKER else last_xy[0])
             y_nav = float(-last_xy[1] if FLIP_Y_MARKER else last_xy[1])
             pos[0] = float(x_nav * MARKER_SIZE_XY_M)
             pos[1] = float(y_nav * MARKER_SIZE_XY_M)
             pos[2] = float(alt_agl_state)
+            if matcher_debug_enabled and active_metrics is not None:
+                active_metrics.update(
+                    {
+                        "frame_index": int(frame_idx),
+                        "source_frame_index": int(source_frame_idx),
+                        "kind": "active",
+                        "raw_matches_total": active_raw_matches_total,
+                        "pose_delta_m": pose_delta_m,
+                        "z_delta_m": float(abs(float(alt_agl_state) - z_before)),
+                        "accepted": bool(accepted),
+                        "direct_marker_reset": int(reset),
+                    }
+                )
+                matcher_debug_rows.append(active_metrics)
         else:
             gray = cv2.cvtColor(frame_small, cv2.COLOR_BGR2GRAY)
             dx = dy = 0.0
@@ -2786,6 +3063,15 @@ def run_unified_pipeline(
     if writer is not None:
         writer.release()
 
+    matcher_comparison = None
+    if matcher_diag_dir is not None:
+        _write_matcher_metrics_csv(matcher_diag_dir / "matcher_metrics.csv", matcher_debug_rows)
+        matcher_comparison = _comparison_summary(matcher_debug_rows, matcher_event_counts)
+        (matcher_diag_dir / "comparison_report.json").write_text(
+            json.dumps(matcher_comparison, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
     duration = max(time.perf_counter() - t_start, 1e-6)
     report_url = None
     if traj_points:
@@ -2800,6 +3086,7 @@ def run_unified_pipeline(
             mode_label,
             video_out_path,
             alert_frames_dir,
+            matcher_diag_dir,
         )
         if session_id in sessions:
             sessions[session_id]["report"] = zip_path
@@ -2815,7 +3102,12 @@ def run_unified_pipeline(
         "report_url": report_url,
         "debug_metrics_info": debug_metrics_info,
         "alerts_saved": int(alert_saved_count),
+        "nav_matcher": nav_matcher_name,
+        "matcher_events": matcher_event_counts,
+        "matcher_diagnostics_dir": str(matcher_diag_dir) if matcher_diag_dir is not None else "",
     }
+    if matcher_comparison is not None:
+        summary["matcher_comparison"] = matcher_comparison
     if debug_evaluator is not None:
         summary["debug_metrics"] = debug_evaluator.summary()
     else:
@@ -2952,11 +3244,13 @@ def index():
 @app.get("/health")
 def health():
     det = getattr(app.state, "detection_client", detection_client)
+    cfg = getattr(app.state, "config", {}) or {}
     d_health = det.health()
     return {
         "status": "ok",
         "detection_url": det.base_url,
         "rpi_source_url": get_rpi_source_url(""),
+        "nav_matcher": cfg.get("nav_matcher", os.getenv("NAV_MATCHER", "legacy")),
         "detection": d_health,
         "modes": MODE_FLAGS,
         "debug_presets": sorted(list(DEBUG_PRESET_PATHS.keys())),
@@ -3622,6 +3916,8 @@ async def ws_process(websocket: WebSocket, session_id: str):
     detect_enabled = bool(meta.get("detect", True))
     save_video = bool(meta.get("save_video", False))
     report_stem = meta.get("report_stem", f"{session_id}")
+    cfg = getattr(app.state, "config", {}) or {}
+    nav_matcher = str(cfg.get("nav_matcher", os.getenv("NAV_MATCHER", "legacy")) or "legacy")
 
     profile = source_profile(source_kind, run_mode=run_mode, nsu_channel=nsu_channel, detect_enabled=detect_enabled)
     if run_mode == "nsu" and nsu_channel == "stream":
@@ -3773,6 +4069,7 @@ async def ws_process(websocket: WebSocket, session_id: str):
             debug_evaluator,
             debug_metrics_info,
             remote_stats_getter,
+            nav_matcher,
         )
     except WebSocketDisconnect:
         if session_id in sessions:
